@@ -34,6 +34,13 @@
 		.banner.info { background: var(--sb-blue-bg, #e9f1fb); color: var(--sb-blue, #2f6db5); display: block; }
 		.scan-input { width: 100%; font-size: 18px; padding: 14px; border: 2px solid var(--sb-orange);
 			border-radius: var(--sb-radius-sm); outline: none; font-weight: 600; letter-spacing: .02em; }
+		/* scan input + inline Go button (manual-entry trigger; works on any soft keyboard) */
+		.scan-row { display: flex; gap: 10px; align-items: stretch; }
+		.scan-row .scan-input { flex: 1; min-width: 0; width: auto; }
+		.scan-go { flex: 0 0 auto; width: 60px; border: none; border-radius: var(--sb-radius-sm);
+			background: var(--sb-orange); color: #fff; font-size: 26px; font-weight: 700; line-height: 1;
+			cursor: pointer; -webkit-appearance: none; }
+		.scan-go:active { filter: brightness(.92); }
 		.hint { color: var(--sb-muted); font-size: 12px; margin-top: 6px; }
 		.truck-card { display: flex; align-items: center; gap: 12px; }
 		.truck-card .big { font-size: 18px; font-weight: 700; }
@@ -125,10 +132,10 @@
 			<div id="home-stale"></div>
 			<div id="home-stats" class="home-stats"></div>
 			<div class="sb-card" style="padding:14px;">
-				<form id="truck-form" autocomplete="off" action="javascript:void(0)">
+				<form id="truck-form" class="scan-row" autocomplete="off" action="javascript:void(0)">
 					<input class="scan-input" id="truck-input" placeholder="Scan or type truck number"
-						autocomplete="off" autocapitalize="characters" enterkeyhint="search" inputmode="text" />
-					<button type="submit" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;"></button>
+						autocomplete="off" autocapitalize="characters" enterkeyhint="go" inputmode="text" />
+					<button type="submit" class="scan-go" id="truck-go" aria-label="Find truck">&rarr;</button>
 				</form>
 				<div class="hint">Scan a truck barcode, or type and tap Go — or pick one below.</div>
 			</div>
@@ -167,10 +174,10 @@
 			<!-- BIN NAV: bins-to-visit (bin-directed mode, before a bin is opened) -->
 			<div id="bin-nav" class="hide">
 				<div class="sb-card" style="padding:14px;margin-top:12px;">
-					<form id="bin-form" autocomplete="off" action="javascript:void(0)">
+					<form id="bin-form" class="scan-row" autocomplete="off" action="javascript:void(0)">
 						<input class="scan-input" id="bin-input" placeholder="Scan or type bin code" autocomplete="off"
 							autocapitalize="characters" enterkeyhint="go" inputmode="text" />
-						<button type="submit" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;"></button>
+						<button type="submit" class="scan-go" id="bin-go" aria-label="Open bin">&rarr;</button>
 					</form>
 					<div class="hint">Go to a bin, scan its code — or tap a bin below.</div>
 				</div>
@@ -179,13 +186,13 @@
 
 			<!-- COIL PANE: scanning coils (flat mode, or the coils inside an opened bin) -->
 			<div id="coil-pane">
-				<div id="bin-context" class="hide"></div>
+				<div id="bin-context" class="bin-context hide"></div>
 
 				<div class="sb-card" style="padding:14px;margin-top:12px;">
-					<form id="coil-form" autocomplete="off" action="javascript:void(0)">
-						<input class="scan-input" id="coil-input" placeholder="Scan coil QR" autocomplete="off"
-							autocapitalize="characters" enterkeyhint="done" inputmode="text" />
-						<button type="submit" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;"></button>
+					<form id="coil-form" class="scan-row" autocomplete="off" action="javascript:void(0)">
+						<input class="scan-input" id="coil-input" placeholder="Scan or type coil" autocomplete="off"
+							autocapitalize="characters" enterkeyhint="go" inputmode="text" />
+						<button type="submit" class="scan-go" id="coil-go" aria-label="Find coil">&rarr;</button>
 					</form>
 					<div class="hint">Scan a coil, then tap <b>Confirm Coil Load</b>.</div>
 				</div>
@@ -478,9 +485,11 @@
 				const unknown = currentBin === UNKNOWN_BIN;
 				const label = unknown ? "Location unknown" : currentBin;
 				const loc = binLoc({ unknown: unknown, zone: sample.zone, aisle: sample.aisle });
+				const remain = inBin.filter((c) => c.coil_status === "Pending").length;
 				bx.innerHTML =
 					'<button class="sb-btn sb-btn--ghost sb-btn--inline sb-btn--sm" id="bx-back">‹ Bins</button>' +
-					'<div style="flex:1;min-width:0;"><div class="bx-code">' + esc(label) + '</div><div class="bx-loc">' + esc(loc) + '</div></div>';
+					'<div style="flex:1;min-width:0;"><div class="bx-code">' + esc(label) + '</div><div class="bx-loc">' + esc(loc) + '</div></div>' +
+					(remain ? '<span class="sb-chip is-info">' + remain + ' to pick</span>' : '<span class="sb-chip is-pass">done</span>');
 				bx.classList.remove("hide");
 				$("bx-back").onclick = backToBins;
 			} else { bx.classList.add("hide"); bx.innerHTML = ""; }
@@ -800,6 +809,26 @@
 		$("truck-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); findTrucks($("truck-input").value.trim()); } });
 		$("coil-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); handleCoilScan($("coil-input").value); } });
 		$("bin-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); handleBinScan($("bin-input").value); } });
+
+		// Scanner auto-detect: a barcode wedge (Zebra/DataWedge) blasts characters at
+		// machine speed (<35ms/char). Watch for that burst and fire ~90ms after it ends,
+		// so the card opens even when the scanner sends NO Enter suffix. Manual typing is
+		// far slower, so it never trips this — those users tap the → button (or Enter).
+		function autoScanWatch(input, handler) {
+			let last = 0, burst = 0, timer = null;
+			input.addEventListener("input", () => {
+				const now = performance.now();
+				const dt = now - last; last = now;
+				burst = dt < 35 ? burst + 1 : 0;
+				if (burst >= 3) {
+					clearTimeout(timer);
+					timer = setTimeout(() => { burst = 0; const v = input.value; if (v) handler(v); }, 90);
+				}
+			});
+		}
+		autoScanWatch($("truck-input"), (v) => findTrucks(v.trim()));
+		autoScanWatch($("coil-input"), handleCoilScan);
+		autoScanWatch($("bin-input"), handleBinScan);
 		$("btn-back").onclick = goHome;
 		$("btn-complete").onclick = onComplete;
 		$("home-refresh").onclick = loadHome;
