@@ -1,0 +1,161 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-06-22 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "loading_plan",
+  "truck_number",
+  "coil_barcode",
+  "event_type",
+  "result",
+  "column_break_1",
+  "scanned_qr",
+  "decoded_coil_id",
+  "operator",
+  "approver",
+  "event_time",
+  "section_meta",
+  "reason",
+  "synced_offline",
+  "client_event_id"
+ ],
+ "fields": [
+  {
+   "fieldname": "loading_plan",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Loading Plan",
+   "options": "Loading Plan"
+  },
+  {
+   "fieldname": "truck_number",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Truck Number"
+  },
+  {
+   "fieldname": "coil_barcode",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Coil Barcode"
+  },
+  {
+   "fieldname": "event_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Event Type",
+   "options": "Loaded\nRejected\nUndo\nShort-Load Request\nApproval\nUnplanned Add\nPlan Amend\nClaim\nTakeover\nCancel"
+  },
+  {
+   "fieldname": "result",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Result",
+   "options": "Success\nRejected"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "scanned_qr",
+   "fieldtype": "Data",
+   "label": "Scanned QR (raw)"
+  },
+  {
+   "fieldname": "decoded_coil_id",
+   "fieldtype": "Data",
+   "label": "Decoded Coil ID"
+  },
+  {
+   "fieldname": "operator",
+   "fieldtype": "Link",
+   "label": "Operator",
+   "options": "User"
+  },
+  {
+   "fieldname": "approver",
+   "fieldtype": "Link",
+   "label": "Approver",
+   "options": "User"
+  },
+  {
+   "default": "now",
+   "fieldname": "event_time",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Event Time"
+  },
+  {
+   "fieldname": "section_meta",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reason / Detail"
+  },
+  {
+   "default": "0",
+   "fieldname": "synced_offline",
+   "fieldtype": "Check",
+   "label": "Synced From Offline"
+  },
+  {
+   "description": "Client-generated idempotency key for offline-queued events.",
+   "fieldname": "client_event_id",
+   "fieldtype": "Data",
+   "label": "Client Event ID",
+   "unique": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-22 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "SBX WMSLite",
+ "name": "Coil Load Event",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Loading Supervisor",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "Loading Operator",
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

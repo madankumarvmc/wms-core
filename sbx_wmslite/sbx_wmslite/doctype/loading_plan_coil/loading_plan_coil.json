@@ -1,0 +1,143 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-06-22 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "coil_barcode",
+  "coil_qr_raw",
+  "material_grade",
+  "weight",
+  "bin_code",
+  "zone",
+  "aisle",
+  "column_break_1",
+  "coil_status",
+  "skip_reason",
+  "skip_note",
+  "section_load",
+  "loaded_by",
+  "loaded_at",
+  "unplanned",
+  "load_event"
+ ],
+ "fields": [
+  {
+   "fieldname": "coil_barcode",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Coil Barcode",
+   "reqd": 1,
+   "columns": 3
+  },
+  {
+   "fieldname": "coil_qr_raw",
+   "fieldtype": "Data",
+   "label": "QR Raw"
+  },
+  {
+   "fieldname": "material_grade",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Material / Grade",
+   "columns": 2
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Weight (kg)",
+   "columns": 2
+  },
+  {
+   "fieldname": "bin_code",
+   "fieldtype": "Data",
+   "label": "Bin Code",
+   "read_only": 1
+  },
+  {
+   "fieldname": "zone",
+   "fieldtype": "Data",
+   "label": "Zone",
+   "read_only": 1
+  },
+  {
+   "fieldname": "aisle",
+   "fieldtype": "Data",
+   "label": "Aisle",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "coil_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Pending\nLoaded\nSkipped",
+   "columns": 2
+  },
+  {
+   "depends_on": "eval:doc.coil_status=='Skipped'",
+   "fieldname": "skip_reason",
+   "fieldtype": "Select",
+   "label": "Skip Reason",
+   "options": "\nDamaged\nNot Available\nQuality Hold\nTruck Full\nOther"
+  },
+  {
+   "depends_on": "eval:doc.coil_status=='Skipped'",
+   "fieldname": "skip_note",
+   "fieldtype": "Small Text",
+   "label": "Skip Note"
+  },
+  {
+   "fieldname": "section_load",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "loaded_by",
+   "fieldtype": "Link",
+   "label": "Loaded By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "loaded_at",
+   "fieldtype": "Datetime",
+   "label": "Loaded At",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "unplanned",
+   "fieldtype": "Check",
+   "label": "Unplanned (added via over-scan)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "load_event",
+   "fieldtype": "Link",
+   "label": "Last Load Event",
+   "options": "Coil Load Event",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-06-22 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "SBX WMSLite",
+ "name": "Loading Plan Coil",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

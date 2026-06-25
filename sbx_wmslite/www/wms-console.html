@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>WMSLite Console</title>
+	<link rel="stylesheet" href="/assets/sbx_wmslite/css/stackbox.css" />
+	<link rel="stylesheet" href="/assets/sbx_wmslite/css/console.css" />
+	<style>
+		.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+		.kpi { background: var(--sb-card); border: 1px solid var(--sb-line); border-radius: var(--sb-radius);
+			padding: 16px 18px; }
+		.kpi .n { font-family: var(--sb-font-display, 'Oswald'); font-size: 34px; font-weight: 700; line-height: 1; }
+		.kpi .l { color: var(--sb-muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-top: 6px; }
+		.kpi.accent .n { color: var(--sb-orange); }
+		.bar { height: 12px; background: var(--sb-line); border-radius: 99px; overflow: hidden; margin-top: 8px; }
+		.bar > i { display: block; height: 100%; background: var(--sb-orange); }
+		table.grid { width: 100%; border-collapse: collapse; background: var(--sb-card); }
+		table.grid th, table.grid td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--sb-line); font-size: 13px; }
+		table.grid th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--sb-muted); }
+		table.grid tr { cursor: default; }
+		table.grid tr.click { cursor: pointer; }
+		table.grid tr.click:hover { background: var(--sb-bg); }
+		.pill { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 99px; }
+		.pill.open { background: var(--sb-blue-bg, #e9f1fb); color: var(--sb-blue, #2f6db5); }
+		.pill.prog { background: var(--sb-amber-bg, #fdf2e0); color: var(--sb-amber, #b9770e); }
+		.pill.appr { background: #f3e8fd; color: #7b3ff2; }
+		.pill.done { background: var(--sb-green-bg, #e7f6ee); color: var(--sb-green, #1f9d57); }
+		.pill.canc { background: #f1f3f5; color: #6b7280; }
+		.scrim2 { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: none; z-index: 60; }
+		.scrim2.show { display: block; }
+		.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(640px, 96vw); background: var(--sb-bg);
+			box-shadow: -8px 0 24px rgba(0,0,0,.15); padding: 22px; overflow: auto; z-index: 61;
+			transform: translateX(100%); transition: transform .25s; }
+		.drawer.show { transform: translateX(0); }
+		.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+		.toolbar input, .toolbar select { padding: 8px 10px; border: 1px solid var(--sb-line); border-radius: var(--sb-radius-sm); }
+		.sb-btn--inline { width: auto; flex: 0 0 auto; }
+	</style>
+</head>
+<body class="sb-body">
+	<div class="app" style="display:grid;grid-template-columns:230px 1fr;min-height:100vh;">
+		<aside class="sidebar" style="background:var(--sb-ink);color:#fff;padding:18px 14px;">
+			<div style="display:flex;align-items:center;gap:8px;margin-bottom:24px;">
+				<img src="/assets/sbx_wmslite/brand/stackbox-logo-white.svg" style="height:22px;" />
+			</div>
+			<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;opacity:.6;margin-bottom:8px;">WMSLite Console</div>
+			<nav id="nav"></nav>
+			<div style="position:absolute;bottom:16px;font-size:12px;opacity:.6;">{{ full_name }}</div>
+		</aside>
+		<main style="padding:24px 28px;width:100%;min-width:0;">
+			<h1 class="sb-display" id="view-title" style="margin:0 0 18px;">Dashboard</h1>
+			<div id="content"></div>
+		</main>
+	</div>
+
+	<div class="scrim2" id="scrim2" onclick="closeDrawer()"></div>
+	<div class="drawer" id="drawer"></div>
+
+	<script>
+		const CSRF = "{{ csrf_token }}";
+		window.WMS_CSRF = CSRF; // exposed for E2E seeding helpers
+		const $ = (id) => document.getElementById(id);
+		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["confirmations", "SAP Confirmations"], ["saplog", "SAP Log"], ["import", "Import"]];
+		const GI_PILL = { "Confirmed": "done", "Pending": "open", "Held": "appr", "Sending": "prog", "Failed (Retryable)": "prog", "Failed (Business)": "canc", "Exhausted": "canc", "Not Required": "canc" };
+		let state = { view: "dashboard" };
+
+		async function api(method, args) {
+			const res = await fetch("/api/method/" + method, {
+				method: "POST", headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": CSRF },
+				body: JSON.stringify(args || {}),
+			});
+			if (!res.ok) {
+				let m = "Error " + res.status;
+				try { const j = await res.json(); m = (j._server_messages ? JSON.parse(j._server_messages).map(x => JSON.parse(x).message).join("\n") : j.message) || m; } catch (e) {}
+				throw new Error(m);
+			}
+			return (await res.json()).message;
+		}
+		const esc = (s) => (s == null ? "" : String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])));
+		const pill = (st) => {
+			const m = { "Open": "open", "In Progress": "prog", "Pending Approval": "appr", "Completed": "done", "Completed (Short)": "done", "Cancelled": "canc" };
+			return '<span class="pill ' + (m[st] || "open") + '">' + esc(st) + '</span>';
+		};
+		// ---- date range helpers (default: last 7 days) ----
+		const isoDate = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+		function defaultRange() { const to = new Date(); const from = new Date(); from.setDate(to.getDate() - 6); return { from: isoDate(from), to: isoDate(to) }; }
+		function dateControls(p, r) {
+			return '<label style="font-size:12px;color:var(--sb-muted);">From <input type="date" id="' + p + '-from" value="' + r.from + '"></label>' +
+				'<label style="font-size:12px;color:var(--sb-muted);">To <input type="date" id="' + p + '-to" value="' + r.to + '"></label>' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" id="' + p + '-clear" style="padding:6px 10px;font-size:12px;">All time</button>';
+		}
+		const rangeArgs = (p) => ({ date_from: $(p + "-from").value || null, date_to: $(p + "-to").value || null });
+
+		function renderNav() {
+			$("nav").innerHTML = VIEWS.map(([k, label]) =>
+				'<a class="nav-item" data-v="' + k + '" style="display:block;padding:9px 12px;border-radius:8px;color:#fff;text-decoration:none;margin-bottom:3px;' +
+				(state.view === k ? "background:var(--sb-orange);font-weight:700;" : "opacity:.85;") + '">' + label + '</a>').join("");
+			document.querySelectorAll(".nav-item").forEach((a) => a.onclick = () => navigate(a.dataset.v));
+		}
+		function navigate(v) { state.view = v; renderNav(); $("view-title").textContent = VIEWS.find(x => x[0] === v)[1]; render(); }
+
+		async function render() {
+			const c = $("content"); c.innerHTML = '<p class="sb-muted">Loading…</p>';
+			try {
+				if (state.view === "dashboard") return renderDashboard(c);
+				if (state.view === "trucks") return renderTrucks(c);
+				if (state.view === "inventory") return renderInventory(c);
+				if (state.view === "confirmations") return renderConfirmations(c);
+				if (state.view === "saplog") return renderSapLog(c);
+				if (state.view === "import") return renderImport(c);
+			} catch (e) { c.innerHTML = '<p style="color:#a23b2e;">' + esc(e.message) + '</p>'; }
+		}
+
+		// ---------- dashboard ----------
+		async function renderDashboard(c) {
+			const r = state.dashRange || defaultRange();
+			c.innerHTML =
+				'<div class="toolbar">' + dateControls("db", r) + '</div>' +
+				'<div class="sb-label" style="margin:2px 0 6px;">Now</div>' +
+				'<div class="kpis" id="db-live"></div>' +
+				'<div class="sb-label" style="margin:16px 0 6px;">Throughput <span id="db-range" class="sb-muted" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>' +
+				'<div class="kpis" id="db-thru"></div>' +
+				'<div class="sb-card" id="db-overall" style="padding:18px;margin-top:18px;"></div>';
+			const load = async () => {
+				const ra = rangeArgs("db");
+				state.dashRange = { from: ra.date_from || "", to: ra.date_to || "" };
+				const d = await api("sbx_wmslite.console_api.get_dashboard", ra);
+				$("db-live").innerHTML =
+					kpi(d.live.open, "Open / Active", true) + kpi(d.live.pending_approval, "Awaiting Approval") +
+					kpi(d.live.gi_awaiting_release, "GI Awaiting Release") + kpi(d.live.gi_failed, "GI Failed");
+				$("db-range").textContent = (ra.date_from && ra.date_to) ? ("· " + ra.date_from + " → " + ra.date_to) : "· all time";
+				$("db-thru").innerHTML =
+					kpi(d.throughput.completed, "Completed") + kpi(d.throughput.coils_loaded, "Coils Loaded") + kpi(d.throughput.rejects, "Rejects");
+				$("db-overall").innerHTML =
+					'<div class="sb-label">Overall coil progress' + ((ra.date_from && ra.date_to) ? " (plans received in range)" : "") + '</div>' +
+					'<div class="bar"><i style="width:' + d.coils.progress_pct + '%"></i></div>' +
+					'<p class="sb-muted" style="margin-top:8px;">' + d.coils.loaded + ' loaded · ' + d.coils.skipped + ' skipped · ' + d.coils.pending + ' pending</p>';
+			};
+			$("db-from").onchange = load; $("db-to").onchange = load;
+			$("db-clear").onclick = () => { $("db-from").value = ""; $("db-to").value = ""; load(); };
+			load();
+		}
+		const kpi = (n, l, accent) => '<div class="kpi' + (accent ? " accent" : "") + '"><div class="n">' + esc(n) + '</div><div class="l">' + esc(l) + '</div></div>';
+
+		// ---------- trucks ----------
+		async function renderTrucks(c) {
+			const r = defaultRange();
+			c.innerHTML =
+				'<div class="toolbar"><input id="t-q" placeholder="Search truck…" />' +
+				'<select id="t-status"><option value="">All statuses</option>' +
+				['Open', 'In Progress', 'Pending Approval', 'Completed', 'Completed (Short)', 'Cancelled'].map(s => '<option>' + s + '</option>').join("") +
+				'</select>' + dateControls("t", r) + '</div><div id="t-table"></div>';
+			const load = async () => {
+				const rows = await api("sbx_wmslite.console_api.get_trucks", { q: $("t-q").value, status: $("t-status").value, ...rangeArgs("t") });
+				$("t-table").innerHTML = '<table class="grid"><thead><tr><th>Truck</th><th>Status</th><th>GI</th><th>Source</th><th>Loaded</th><th>Pending</th><th>Total</th><th>Claimed</th></tr></thead><tbody>' +
+					(rows.length ? rows.map(r =>
+						'<tr class="click" data-p="' + esc(r.name) + '"><td><b>' + esc(r.truck_number) + '</b></td><td>' + pill(r.plan_status) +
+						'</td><td><span class="pill ' + (GI_PILL[r.gi_status] || "canc") + '">' + esc(r.gi_status || "—") + '</span></td><td>' + esc(r.source) +
+						'</td><td>' + r.loaded_coils + '</td><td>' + r.pending_coils + '</td><td>' + r.total_coils + '</td><td>' + esc(r.claimed_by || "—") + '</td></tr>'
+					).join("") : '<tr><td colspan="8" class="sb-muted">No trucks</td></tr>') + '</tbody></table>';
+				document.querySelectorAll("#t-table tr.click").forEach(tr => tr.onclick = () => truckDrawer(tr.dataset.p));
+			};
+			$("t-q").oninput = () => { clearTimeout(window._td); window._td = setTimeout(load, 300); };
+			$("t-status").onchange = load;
+			$("t-from").onchange = load; $("t-to").onchange = load;
+			$("t-clear").onclick = () => { $("t-from").value = ""; $("t-to").value = ""; load(); };
+			load();
+		}
+
+		async function truckDrawer(plan) {
+			const d = await api("sbx_wmslite.console_api.get_truck_detail", { plan });
+			const p = d.plan;
+			openDrawer(
+				'<div style="display:flex;align-items:center;"><h2 class="sb-h1" style="margin:0;flex:1;">' + esc(p.truck_number) + '</h2>' + pill(p.plan_status) + '</div>' +
+				'<p class="sb-muted">' + esc(p.name) + ' · ' + esc(p.source) + (p.sap_plan_id ? ' · SAP ' + esc(p.sap_plan_id) : '') + '</p>' +
+				'<div class="row" style="display:flex;gap:8px;margin:12px 0;">' +
+				(p.plan_status !== "Cancelled" ? '<button class="sb-btn sb-btn--ghost sb-btn--inline" id="d-cancel">Cancel plan</button>' : '<button class="sb-btn sb-btn--ghost sb-btn--inline" id="d-reopen">Reopen</button>') +
+				'</div>' +
+				'<div class="sb-label" style="margin-top:8px;">Coils (' + p.loaded_coils + '/' + p.total_coils + ' loaded)</div>' +
+				'<table class="grid"><thead><tr><th>Coil</th><th>Status</th><th>Grade</th><th>By</th></tr></thead><tbody>' +
+				d.coils.map(c => '<tr><td>' + esc(c.coil_barcode) + (c.unplanned ? ' <span class="sb-muted">(unplanned)</span>' : '') + '</td><td>' + esc(c.coil_status) +
+					(c.skip_reason ? ' <span class="sb-muted">(' + esc(c.skip_reason) + ')</span>' : '') + '</td><td>' + esc(c.material_grade || "") + '</td><td>' + esc(c.loaded_by || "—") + '</td></tr>').join("") +
+				'</tbody></table>' +
+				'<div class="sb-label" style="margin-top:18px;">Events</div>' +
+				'<table class="grid"><thead><tr><th>Time</th><th>Event</th><th>Coil</th><th>Operator</th><th>Detail</th></tr></thead><tbody>' +
+				d.events.map(e => '<tr><td style="white-space:nowrap;">' + esc((e.event_time || "").slice(0, 19)) + '</td><td>' + esc(e.event_type) + (e.result === "Rejected" ? ' ✗' : '') +
+					'</td><td>' + esc(e.coil_barcode || "") + '</td><td>' + esc(e.operator || e.approver || "") + '</td><td class="sb-muted">' + esc(e.reason || "") + '</td></tr>').join("") +
+				'</tbody></table>'
+			);
+			const cb = $("d-cancel"); if (cb) cb.onclick = async () => { if (confirm("Cancel this plan?")) { await api("sbx_wmslite.console_api.cancel_plan", { plan }); closeDrawer(); render(); } };
+			const rb = $("d-reopen"); if (rb) rb.onclick = async () => { await api("sbx_wmslite.console_api.cancel_plan", { plan, reopen: 1 }); closeDrawer(); render(); };
+		}
+
+		// ---------- SAP confirmations (outbound GI) ----------
+		async function renderConfirmations(c) {
+			const r = defaultRange();
+			c.innerHTML = '<div class="toolbar">' + dateControls("cf", r) + '</div><div id="cf-table"></div>';
+			const load = async () => {
+				const rows = await api("sbx_wmslite.console_api.get_confirmations", rangeArgs("cf"));
+				$("cf-table").innerHTML = '<table class="grid"><thead><tr><th>Truck</th><th>Type</th><th>Status</th><th>Attempts</th><th>GI Doc</th><th>Last error</th><th>Actions</th></tr></thead><tbody>' +
+					(rows.length ? rows.map(r => {
+						let actions = "";
+						if (r.status === "Held") actions += '<button class="sb-btn sb-btn--primary sb-btn--inline" style="padding:7px 12px;font-size:12px;" data-rel="' + esc(r.name) + '">Release</button> ';
+						if (["Failed (Retryable)", "Failed (Business)", "Exhausted"].includes(r.status)) actions += '<button class="sb-btn sb-btn--orange sb-btn--inline" style="padding:7px 12px;font-size:12px;" data-retry="' + esc(r.name) + '">Retry</button> ';
+						return '<tr><td><b>' + esc(r.truck_number) + '</b></td><td>' + esc(r.confirmation_type) +
+							'</td><td><span class="pill ' + (GI_PILL[r.status] || "canc") + '">' + esc(r.status) + '</span></td><td>' + (r.attempts || 0) +
+							'</td><td>' + esc(r.sap_gi_document || "—") + '</td><td class="sb-muted">' + esc(r.last_error || "") + '</td><td style="white-space:nowrap;">' + actions + '</td></tr>';
+					}).join("") : '<tr><td colspan="7" class="sb-muted">No confirmations yet</td></tr>') + '</tbody></table>';
+				document.querySelectorAll("#cf-table [data-rel]").forEach(b => b.onclick = async () => {
+					try { await api("sbx_wmslite.console_api.release_confirmation", { name: b.dataset.rel }); load(); } catch (e) { alert(e.message); } });
+				document.querySelectorAll("#cf-table [data-retry]").forEach(b => b.onclick = async () => {
+					try { await api("sbx_wmslite.console_api.retry_confirmation", { name: b.dataset.retry }); load(); } catch (e) { alert(e.message); } });
+			};
+			$("cf-from").onchange = load; $("cf-to").onchange = load;
+			$("cf-clear").onclick = () => { $("cf-from").value = ""; $("cf-to").value = ""; load(); };
+			load();
+		}
+
+		// ---------- SAP log ----------
+		async function renderSapLog(c) {
+			const r = defaultRange();
+			c.innerHTML = '<div class="toolbar">' +
+				'<select id="sl-dir"><option value="">All directions</option><option>Inbound</option><option>Outbound</option></select>' +
+				dateControls("sl", r) + '</div><div id="sl-table"></div>';
+			const load = async () => {
+				const rows = await api("sbx_wmslite.console_api.get_sap_log", { direction: $("sl-dir").value, ...rangeArgs("sl") });
+				$("sl-table").innerHTML = '<table class="grid"><thead><tr><th>Time</th><th>Dir</th><th>Action</th><th>Result</th><th>Truck</th><th>Plan ID</th><th>Message</th><th>IP</th></tr></thead><tbody>' +
+					(rows.length ? rows.map(r => '<tr><td style="white-space:nowrap;">' + esc((r.received_at || "").slice(0, 19)) + '</td><td>' + esc(r.direction || "Inbound") + '</td><td>' + esc(r.action) +
+						'</td><td>' + esc(r.result) + '</td><td>' + esc(r.truck_number || "") + '</td><td>' + esc(r.sap_plan_id || "") +
+						'</td><td class="sb-muted">' + esc(r.message || "") + '</td><td class="sb-muted">' + esc(r.source_ip || "") + '</td></tr>').join("") :
+						'<tr><td colspan="8" class="sb-muted">No SAP calls in range</td></tr>') + '</tbody></table>';
+			};
+			$("sl-dir").onchange = load; $("sl-from").onchange = load; $("sl-to").onchange = load;
+			$("sl-clear").onclick = () => { $("sl-from").value = ""; $("sl-to").value = ""; load(); };
+			load();
+		}
+
+		// ---------- import wizard ----------
+		let imp = {};
+		// ---------- Bin Inventory display ----------
+		async function renderInventory(c) {
+			c.innerHTML = '<div class="toolbar"><input id="bi-q" placeholder="Search coil or bin…" />' +
+				'<select id="bi-status"><option value="">All statuses</option><option>Available</option><option>Picked</option><option>Blocked</option></select>' +
+				'<span id="bi-count" class="sb-muted" style="font-size:13px;"></span></div><div id="bi-table"></div>';
+			const load = async () => {
+				const d = await api("sbx_wmslite.console_api.get_bin_inventory", { q: $("bi-q").value, status: $("bi-status").value });
+				$("bi-count").textContent = d.total + " coil(s) in inventory";
+				$("bi-table").innerHTML = '<table class="grid"><thead><tr><th>Bin</th><th>Coil</th><th>Grade</th><th>Weight</th><th>Zone/Aisle</th><th>Status</th><th>Source</th><th>Updated</th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td>' + esc(r.coil_barcode) + '</td><td>' + esc(r.material_grade || "") +
+						'</td><td>' + (r.weight || "") + '</td><td>' + esc([r.zone, r.aisle].filter(Boolean).join(" / ")) + '</td><td>' + esc(r.status || "") +
+						'</td><td class="sb-muted">' + esc(r.source || "") + '</td><td class="sb-muted">' + esc((r.updated_at || "").slice(0, 19)) + '</td></tr>').join("") :
+						'<tr><td colspan="8" class="sb-muted">No bin inventory yet — push it or import via the Import tab.</td></tr>') + '</tbody></table>';
+			};
+			$("bi-q").oninput = () => { clearTimeout(window._bid); window._bid = setTimeout(load, 300); };
+			$("bi-status").onchange = load;
+			load();
+		}
+
+		const IMPORT_DATASETS = ["Loading Plan", "Bin Inventory"];
+		async function renderImport(c) {
+			imp = { dataset: "Loading Plan" };
+			const help = {
+				"Loading Plan": "One row per coil. Required: <b>truck_number</b>, <b>coil_barcode</b>. Optional: sap_plan_id, material_grade, weight.",
+				"Bin Inventory": "One row per coil. Required: <b>coil_barcode</b>, <b>bin_code</b>. Optional: material_grade, weight, zone, aisle.",
+			};
+			c.innerHTML =
+				'<div class="sb-card" style="padding:20px;max-width:620px;">' +
+				'<div class="sb-label">Upload</div><h2 class="sb-h2" style="margin:.2em 0 .6em;">Import data</h2>' +
+				'<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;"><label style="font-size:13px;">Dataset</label>' +
+				'<select id="imp-dataset">' + IMPORT_DATASETS.map(d => '<option' + (d === imp.dataset ? " selected" : "") + '>' + d + '</option>').join("") + '</select></div>' +
+				'<p class="sb-muted" id="imp-help">' + help[imp.dataset] + '</p>' +
+				'<a class="sb-btn sb-btn--ghost sb-btn--inline" id="imp-tpl" style="display:inline-block;margin-bottom:12px;">⬇ Download template</a>' +
+				'<div style="height:6px;"></div>' +
+				'<input type="file" id="imp-file" accept=".csv,.xlsx" style="margin:12px 0;" />' +
+				'<div id="imp-out"></div></div>';
+			const tplLink = () => $("imp-tpl").setAttribute("href", "/api/method/sbx_wmslite.console_api.get_import_template?dataset=" + encodeURIComponent(imp.dataset));
+			tplLink();
+			$("imp-dataset").onchange = (e) => { imp.dataset = e.target.value; $("imp-help").innerHTML = help[imp.dataset]; tplLink(); $("imp-out").innerHTML = ""; };
+			$("imp-file").onchange = uploadFile;
+		}
+		async function uploadFile(e) {
+			const file = e.target.files[0]; if (!file) return;
+			const out = $("imp-out"); out.innerHTML = '<p class="sb-muted">Uploading…</p>';
+			const fd = new FormData(); fd.append("file", file); fd.append("is_private", 1);
+			const up = await fetch("/api/method/upload_file", { method: "POST", headers: { "X-Frappe-CSRF-Token": CSRF }, body: fd });
+			const uj = await up.json(); imp.file_url = uj.message.file_url; imp.file_name = file.name;
+			const p = await api("sbx_wmslite.console_api.parse_upload", { file_url: imp.file_url, dataset: imp.dataset });
+			imp.mapping = p.suggested_mapping || {};
+			out.innerHTML = '<div class="sb-label" style="margin-top:8px;">Map columns</div>' +
+				p.columns.map(col => '<div style="display:flex;gap:8px;align-items:center;margin:6px 0;"><label style="width:130px;font-size:13px;">' + col + (p.required.includes(col) ? ' *' : '') + '</label>' +
+					'<select data-col="' + col + '"><option value="">— none —</option>' + p.headers.map(h => '<option ' + (imp.mapping[col] === h ? "selected" : "") + '>' + esc(h) + '</option>').join("") + '</select></div>').join("") +
+				'<p class="sb-muted">' + p.total_rows + ' data rows.</p>' +
+				'<button class="sb-btn sb-btn--primary" id="imp-preview" style="margin-top:8px;">Preview</button><div id="imp-prev"></div>';
+			$("imp-preview").onclick = previewImport;
+		}
+		function readMapping() { const m = {}; document.querySelectorAll("#imp-out select[data-col]").forEach(s => { if (s.value) m[s.dataset.col] = s.value; }); return m; }
+		async function previewImport() {
+			imp.mapping = readMapping();
+			const r = await api("sbx_wmslite.console_api.import_preview", { file_url: imp.file_url, mapping: JSON.stringify(imp.mapping), dataset: imp.dataset });
+			$("imp-prev").innerHTML = '<div class="sb-card" style="padding:14px;margin-top:12px;background:var(--sb-bg);">' +
+				'<b>' + r.plans + '</b> ' + (r.group_unit || "plans") + ', <b>' + r.total_rows + '</b> rows, <b style="color:' + (r.errors ? '#a23b2e' : 'var(--sb-green)') + ';">' + r.errors + '</b> error(s).' +
+				(r.sample_errors.length ? '<ul>' + r.sample_errors.map(e => '<li class="sb-muted">' + esc(e) + '</li>').join("") + '</ul>' : '') +
+				'<button class="sb-btn sb-btn--orange" id="imp-commit" style="margin-top:10px;"' + (r.errors ? "" : "") + '>Commit import</button></div>';
+			$("imp-commit").onclick = commitImport;
+		}
+		async function commitImport() {
+			const r = await api("sbx_wmslite.console_api.import_commit", { file_url: imp.file_url, mapping: JSON.stringify(imp.mapping), label: imp.file_name, file_name: imp.file_name, dataset: imp.dataset });
+			imp.batch = r.batch; $("imp-prev").innerHTML = '<p class="sb-muted">Importing… (batch ' + esc(r.batch) + ')</p>';
+			poll();
+		}
+		async function poll() {
+			const s = await api("sbx_wmslite.console_api.get_import_status", { batch: imp.batch });
+			if (s.done) {
+				$("imp-prev").innerHTML = '<div class="sb-card" style="padding:14px;margin-top:12px;"><b>' + esc(s.status) + '</b> — ' + s.inserted + ' plan(s) imported, ' + s.errors + ' error(s).' +
+					(s.error_report ? '<pre style="white-space:pre-wrap;font-size:12px;">' + esc(s.error_report) + '</pre>' : '') + '</div>';
+			} else { setTimeout(poll, 1500); }
+		}
+
+		// ---------- drawer ----------
+		function openDrawer(html) { $("drawer").innerHTML = html; $("drawer").classList.add("show"); $("scrim2").classList.add("show"); }
+		function closeDrawer() { $("drawer").classList.remove("show"); $("scrim2").classList.remove("show"); }
+
+		renderNav(); render();
+	</script>
+</body>
+</html>

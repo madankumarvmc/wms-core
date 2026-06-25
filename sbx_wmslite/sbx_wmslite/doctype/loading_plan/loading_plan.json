@@ -1,0 +1,259 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 0,
+ "autoname": "LP-.#####",
+ "creation": "2026-06-22 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "truck_number",
+  "sap_plan_id",
+  "plan_status",
+  "column_break_head",
+  "source",
+  "received_at",
+  "completed_at",
+  "import_batch",
+  "section_claim",
+  "claimed_by",
+  "claimed_at",
+  "column_break_claim",
+  "approved_by",
+  "approval_remarks",
+  "section_gi",
+  "gi_status",
+  "gi_sap_document",
+  "column_break_gi",
+  "gi_confirmation",
+  "gi_confirmed_at",
+  "section_counts",
+  "total_coils",
+  "loaded_coils",
+  "column_break_counts",
+  "skipped_coils",
+  "pending_coils",
+  "section_coils",
+  "coils"
+ ],
+ "fields": [
+  {
+   "fieldname": "truck_number",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Truck Number",
+   "reqd": 1
+  },
+  {
+   "description": "SAP loading-plan identifier — idempotency key for re-sends.",
+   "fieldname": "sap_plan_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "SAP Plan ID",
+   "unique": 1
+  },
+  {
+   "default": "Open",
+   "fieldname": "plan_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Open\nIn Progress\nPending Approval\nCompleted\nCompleted (Short)\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "SAP API",
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "SAP API\nUpload",
+   "read_only": 1
+  },
+  {
+   "default": "now",
+   "fieldname": "received_at",
+   "fieldtype": "Datetime",
+   "label": "Received At"
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "import_batch",
+   "fieldtype": "Data",
+   "label": "Import Batch",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_claim",
+   "fieldtype": "Section Break",
+   "label": "Claim & Approval"
+  },
+  {
+   "description": "Operator currently working this truck (soft lock).",
+   "fieldname": "claimed_by",
+   "fieldtype": "Link",
+   "label": "Claimed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "claimed_at",
+   "fieldtype": "Datetime",
+   "label": "Claimed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_claim",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "approved_by",
+   "fieldtype": "Link",
+   "label": "Short-Load Approved By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approval_remarks",
+   "fieldtype": "Small Text",
+   "label": "Approval Remarks",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_gi",
+   "fieldtype": "Section Break",
+   "label": "SAP Goods Issue"
+  },
+  {
+   "default": "Not Required",
+   "fieldname": "gi_status",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "GI Status",
+   "options": "Not Required\nHeld\nPending\nConfirmed\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gi_sap_document",
+   "fieldtype": "Data",
+   "label": "GI SAP Document",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_gi",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "gi_confirmation",
+   "fieldtype": "Link",
+   "label": "GI Confirmation",
+   "options": "WMSLite SAP Confirmation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gi_confirmed_at",
+   "fieldtype": "Datetime",
+   "label": "GI Confirmed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_counts",
+   "fieldtype": "Section Break",
+   "label": "Progress"
+  },
+  {
+   "fieldname": "total_coils",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Total Coils",
+   "read_only": 1
+  },
+  {
+   "fieldname": "loaded_coils",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Loaded",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_counts",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "skipped_coils",
+   "fieldtype": "Int",
+   "label": "Skipped",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pending_coils",
+   "fieldtype": "Int",
+   "label": "Pending",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_coils",
+   "fieldtype": "Section Break",
+   "label": "Coils"
+  },
+  {
+   "fieldname": "coils",
+   "fieldtype": "Table",
+   "label": "Coils",
+   "options": "Loading Plan Coil"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-22 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "SBX WMSLite",
+ "name": "Loading Plan",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Loading Supervisor",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Loading Operator",
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

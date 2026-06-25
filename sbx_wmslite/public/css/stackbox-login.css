@@ -1,0 +1,199 @@
+/* Stackbox auth reskin — loaded on every web page but every rule is scoped to
+   Frappe's auth sections (.for-login / .for-forgot / .for-login-with-email-link
+   / .for-signup), which only exist on /login. Other pages are unaffected.
+   Frappe shows one section at a time, so each is styled as a full-screen view. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Oswald:wght@600;700&display=swap');
+
+/* ---- Full-screen dark hero (pure CSS — no external image) -------------------
+   warm orange glow top-right + a faint barcode motif echoing the Stackbox logo. */
+.for-login,
+.for-forgot,
+.for-login-with-email-link,
+.for-signup {
+	position: fixed;
+	inset: 0;
+	z-index: 5;
+	display: flex;
+	flex-direction: column;          /* stack logo → heading → card vertically */
+	align-items: center;
+	justify-content: center;
+	gap: 22px;
+	padding: 32px 22px calc(32px + env(safe-area-inset-bottom));
+	overflow: auto;
+	font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+	background:
+		radial-gradient(120% 80% at 78% 4%, rgba(233,123,58,.20) 0%, rgba(11,11,14,0) 46%),
+		repeating-linear-gradient(90deg, rgba(255,255,255,.022) 0 2px, transparent 2px 9px),
+		linear-gradient(180deg, #121116 0%, #0b0b0e 60%, #08080a 100%),
+		#0b0b0e;
+}
+
+/* ---- Header: white logo + section title ----------------------------------- */
+.for-login .page-card-head,
+.for-forgot .page-card-head,
+.for-login-with-email-link .page-card-head,
+.for-signup .page-card-head {
+	text-align: center;
+	border: 0;
+	padding: 0;
+	margin: 0;
+}
+.for-login .app-logo,
+.for-forgot .app-logo,
+.for-login-with-email-link .app-logo,
+.for-signup .app-logo {
+	content: url('/assets/sbx_wmslite/brand/stackbox-logo-white.svg');
+	height: 28px; width: auto; margin: 0 auto 18px; display: block;
+}
+
+/* Default Frappe title (<h4>) — hide the redundant "Login to Frappe",
+   but keep & style the meaningful ones (Forgot Password / Email Link / Sign up). */
+.for-login .page-card-head h4 { display: none; }
+.for-forgot .page-card-head h4,
+.for-login-with-email-link .page-card-head h4,
+.for-signup .page-card-head h4 {
+	font-family: 'Oswald', sans-serif;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: .015em;
+	font-size: 22px;
+	color: #fff;
+	margin: 0;
+}
+
+/* Hero heading — only on the main login screen */
+.for-login .page-card-head::after {
+	content: "Welcome to SBX WMSLite";
+	display: block;
+	max-width: 320px;
+	margin: 0 auto;
+	font-family: 'Oswald', sans-serif;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: .015em;
+	font-size: 27px;
+	line-height: 1.04;
+	color: #fff;
+}
+
+/* ---- Card ----------------------------------------------------------------- */
+.for-login .login-content.page-card,
+.for-forgot .login-content.page-card,
+.for-login-with-email-link .login-content.page-card,
+.for-signup .login-content.page-card {
+	width: 100%;
+	max-width: 380px;
+	background: rgba(255,255,255,.045);
+	border: 1px solid rgba(255,255,255,.09);
+	border-radius: 18px;
+	padding: 26px 22px 24px;
+	box-shadow: 0 24px 70px rgba(0,0,0,.55);
+	-webkit-backdrop-filter: blur(12px);
+	backdrop-filter: blur(12px);
+}
+.for-login .page-card-body,
+.for-forgot .page-card-body,
+.for-login-with-email-link .page-card-body { padding: 0; }
+
+/* ---- Inputs --------------------------------------------------------------- */
+.for-login .form-control,
+.for-forgot .form-control,
+.for-login-with-email-link .form-control {
+	height: auto;
+	padding: 14px 42px 14px 14px;     /* room for the trailing field icon */
+	background: rgba(255,255,255,.05);
+	border: 1.5px solid rgba(255,255,255,.14);
+	border-radius: 12px;
+	color: #fff;
+	font-size: 16px;                  /* ≥16px stops iOS zoom-on-focus */
+	margin-bottom: 14px;
+}
+.for-login .form-control::placeholder,
+.for-forgot .form-control::placeholder,
+.for-login-with-email-link .form-control::placeholder { color: rgba(255,255,255,.42); }
+.for-login .form-control:focus,
+.for-forgot .form-control:focus,
+.for-login-with-email-link .form-control:focus {
+	border-color: #e97b3a;
+	background: rgba(255,255,255,.07);
+	box-shadow: 0 0 0 3px rgba(233,123,58,.18);
+}
+/* Kill the white box Chrome/Safari paint over autofilled inputs on dark bg */
+.for-login input:-webkit-autofill,
+.for-login input:-webkit-autofill:focus,
+.for-login-with-email-link input:-webkit-autofill,
+.for-forgot input:-webkit-autofill {
+	-webkit-text-fill-color: #fff;
+	caret-color: #fff;
+	transition: background-color 9999s ease-in-out 0s;   /* defer the autofill bg */
+}
+
+/* Field icons + password toggle */
+.for-login .field-icon use,
+.for-forgot .field-icon use,
+.for-login-with-email-link .field-icon use { stroke: rgba(255,255,255,.5); }
+.for-login .toggle-password { color: rgba(255,255,255,.6); }
+
+/* Links / muted text / "or" divider */
+.for-login label,
+.for-login .text-muted,
+.for-login .login-divider,
+.for-forgot .text-muted,
+.for-login-with-email-link .text-muted { color: rgba(255,255,255,.6) !important; }
+.for-login a,
+.for-forgot a,
+.for-login-with-email-link a { color: #e97b3a; font-weight: 500; }
+.for-login a:hover { color: #f08e54; }
+.for-login .forgot-password-message { text-align: right; margin: 2px 0 18px; font-size: 13px; }
+.for-login .login-divider {
+	display: flex; align-items: center; gap: 12px;
+	font-size: 12px; text-transform: lowercase; margin: 18px 0 14px;
+}
+.for-login .login-divider::before,
+.for-login .login-divider::after {
+	content: ""; flex: 1; height: 1px; background: rgba(255,255,255,.12);
+}
+
+/* ---- Buttons -------------------------------------------------------------- */
+.for-login .btn-login.btn-primary,
+.for-forgot .btn-primary,
+.for-login-with-email-link .btn-login,
+.for-signup .btn-primary {
+	background: #e97b3a;
+	border-color: #e97b3a;
+	color: #fff;
+	border-radius: 999px;
+	padding: 14px;
+	font-weight: 600;
+	font-size: 15px;
+	box-shadow: 0 8px 22px rgba(233,123,58,.28);
+}
+.for-login .btn-login.btn-primary:hover,
+.for-login .btn-login.btn-primary:focus,
+.for-forgot .btn-primary:hover,
+.for-login-with-email-link .btn-login:hover {
+	background: #dd6e2c; border-color: #dd6e2c;
+}
+/* Secondary / option buttons (Email Link, social, "Back to Login") */
+.for-login .btn-default,
+.for-login .btn-login-option,
+.for-forgot .btn-default {
+	background: transparent;
+	border: 1.5px solid rgba(255,255,255,.22);
+	color: #fff;
+	border-radius: 999px;
+	padding: 14px;
+	font-weight: 500;
+	box-shadow: none;
+}
+.for-login .btn-default:hover,
+.for-login .btn-login-option:hover { background: rgba(255,255,255,.06); }
+
+/* Sign-up footer line */
+.for-login .sign-up-message,
+.for-forgot .sign-up-message,
+.for-login-with-email-link .sign-up-message {
+	color: rgba(255,255,255,.6);
+	font-size: 14px;
+	margin-top: 4px;
+}

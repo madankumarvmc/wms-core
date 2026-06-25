@@ -1,0 +1,78 @@
+/* Stackbox design system — tokens + components (PWA light theme).
+   Free-font substitutes: Oswald (condensed display) + Inter (body).
+   Swap to brand fonts later by changing --sb-font-* and the @import. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Oswald:wght@500;600;700&display=swap');
+
+:root {
+	/* ink / surface */
+	--sb-ink: #15161b;
+	--sb-ink-2: #3a3d46;
+	--sb-muted: #6b7280;
+	--sb-line: #ebedf0;
+	--sb-bg: #f4f5f7;
+	--sb-card: #ffffff;
+	--sb-icon-bg: #f1f3f5;
+
+	/* brand */
+	--sb-orange: #e97b3a;
+	--sb-slate: #64748b;       /* neutral status pill (PENDING / NOT VISITED) */
+
+	/* semantic */
+	--sb-green: #1f9d57;  --sb-green-bg: #e7f6ee;
+	--sb-amber: #b9770e;  --sb-amber-bg: #fdf3e0;
+	--sb-blue:  #2f6db5;  --sb-blue-bg:  #e8f0fa;
+
+	/* shape */
+	--sb-radius: 14px;
+	--sb-radius-sm: 10px;
+	--sb-pill: 999px;
+	--sb-shadow: 0 1px 3px rgba(20,22,27,.06), 0 1px 2px rgba(20,22,27,.04);
+
+	--sb-font-display: 'Oswald', 'Arial Narrow', system-ui, sans-serif;
+	--sb-font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.sb-body { font-family: var(--sb-font-body); color: var(--sb-ink); background: var(--sb-bg); }
+
+/* Display heading — heavy condensed uppercase */
+.sb-display { font-family: var(--sb-font-display); font-weight: 700; text-transform: uppercase; letter-spacing: .01em; line-height: 1.02; color: var(--sb-ink); }
+.sb-h1 { font-size: 30px; }
+.sb-h2 { font-size: 22px; }
+
+/* Tiny uppercase section label (with superscript count) */
+.sb-label { font-family: var(--sb-font-body); font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--sb-muted); }
+.sb-label sup { font-size: 9px; top: -.6em; }
+
+/* Card */
+.sb-card { background: var(--sb-card); border-radius: var(--sb-radius); box-shadow: var(--sb-shadow); padding: 16px; }
+
+/* Status chip / pill */
+.sb-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 4px 10px; border-radius: var(--sb-pill); background: var(--sb-slate); color: #fff; }
+.sb-chip.is-pass { background: var(--sb-green-bg); color: var(--sb-green); }
+.sb-chip.is-fail { background: var(--sb-amber-bg); color: var(--sb-amber); }
+.sb-chip.is-info { background: var(--sb-blue-bg); color: var(--sb-blue); }
+
+/* Buttons */
+.sb-btn { font-family: var(--sb-font-body); font-size: 15px; font-weight: 600; border-radius: var(--sb-pill); padding: 14px 22px; border: 1.5px solid transparent; cursor: pointer; width: 100%; transition: transform .04s ease, opacity .15s ease; }
+.sb-btn:active { transform: scale(.99); }
+.sb-btn--primary { background: var(--sb-ink); color: #fff; }
+.sb-btn--ghost { background: #fff; color: var(--sb-ink); border-color: var(--sb-ink); }
+.sb-btn--orange { background: var(--sb-orange); color: #fff; }
+
+/* Leading rounded-square icon (card list item) */
+.sb-iconbox { width: 40px; height: 40px; border-radius: var(--sb-radius-sm); background: var(--sb-icon-bg); display: flex; align-items: center; justify-content: center; color: var(--sb-muted); flex: 0 0 auto; }
+
+/* Sticky bottom action bar */
+.sb-bottombar { position: sticky; bottom: 0; background: #fff; border-top: 1px solid var(--sb-line); padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: 1fr 1.4fr; gap: 12px; }
+
+/* Form fields */
+.sb-field { margin-bottom: 14px; }
+.sb-field > label { display: block; font-size: 12px; color: var(--sb-muted); font-weight: 500; margin-bottom: 6px; }
+.sb-input { width: 100%; padding: 13px 14px; border: 1.5px solid var(--sb-line); border-radius: var(--sb-radius-sm); font-size: 16px; font-family: var(--sb-font-body); color: var(--sb-ink); background: #fff; }
+.sb-input:focus { outline: none; border-color: var(--sb-ink); }
+.sb-input.is-auto { background: var(--sb-icon-bg); color: var(--sb-ink-2); }
+
+/* Tabs (active underline) */
+.sb-tabs { display: flex; gap: 22px; border-bottom: 1px solid var(--sb-line); }
+.sb-tab { padding: 10px 0; font-family: var(--sb-font-display); font-weight: 600; text-transform: uppercase; font-size: 14px; letter-spacing: .03em; color: var(--sb-muted); border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; }
+.sb-tab.is-active { color: var(--sb-ink); border-bottom-color: var(--sb-ink); }

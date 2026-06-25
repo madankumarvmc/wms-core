@@ -1,0 +1,264 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-06-22 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "section_sap",
+  "sap_enabled",
+  "sap_api_key",
+  "allow_plan_remove_on_resync",
+  "section_scan",
+  "qr_decode_rule",
+  "qr_decode_regex",
+  "allow_overscan",
+  "undo_window_seconds",
+  "section_approval",
+  "supervisor_pin",
+  "section_bin",
+  "bin_picking_enabled",
+  "bin_decode_rule",
+  "bin_decode_regex",
+  "column_break_bin",
+  "allow_pick_outside_bin",
+  "mark_picked_on_load",
+  "section_gi",
+  "gi_enabled",
+  "sap_token_url",
+  "sap_client_id",
+  "sap_client_secret",
+  "sap_scope",
+  "sap_gi_url",
+  "column_break_gi",
+  "verify_tls",
+  "sap_gi_timeout",
+  "gi_max_attempts",
+  "gi_auto_send_full",
+  "gi_hold_short_for_review"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_sap",
+   "fieldtype": "Section Break",
+   "label": "SAP Integration"
+  },
+  {
+   "default": "1",
+   "fieldname": "sap_enabled",
+   "fieldtype": "Check",
+   "label": "Accept SAP Push"
+  },
+  {
+   "description": "Shared secret SAP sends in the X-WMSLite-Key header.",
+   "fieldname": "sap_api_key",
+   "fieldtype": "Password",
+   "label": "SAP API Key"
+  },
+  {
+   "default": "1",
+   "description": "On re-send, drop still-Pending coils absent from the new payload (Loaded coils are always protected).",
+   "fieldname": "allow_plan_remove_on_resync",
+   "fieldtype": "Check",
+   "label": "Allow Removing Pending Coils on Re-sync"
+  },
+  {
+   "fieldname": "section_scan",
+   "fieldtype": "Section Break",
+   "label": "Coil QR Scanning"
+  },
+  {
+   "default": "Identity",
+   "description": "Identity = scanned QR equals the coil ID. Regex Extract = pull coil ID from capture group 1.",
+   "fieldname": "qr_decode_rule",
+   "fieldtype": "Select",
+   "label": "QR Decode Rule",
+   "options": "Identity\nRegex Extract"
+  },
+  {
+   "depends_on": "eval:doc.qr_decode_rule=='Regex Extract'",
+   "fieldname": "qr_decode_regex",
+   "fieldtype": "Data",
+   "label": "QR Decode Regex (group 1 = coil ID)"
+  },
+  {
+   "default": "0",
+   "description": "Allow loading a coil that is not on the plan (creates an Unplanned coil; supervised).",
+   "fieldname": "allow_overscan",
+   "fieldtype": "Check",
+   "label": "Allow Over-scan (unplanned coils)"
+  },
+  {
+   "default": "120",
+   "fieldname": "undo_window_seconds",
+   "fieldtype": "Int",
+   "label": "Undo Window (seconds)"
+  },
+  {
+   "fieldname": "section_approval",
+   "fieldtype": "Section Break",
+   "label": "Short-Load Approval"
+  },
+  {
+   "description": "PIN a supervisor enters at the handheld to approve a short-load completion (verified online).",
+   "fieldname": "supervisor_pin",
+   "fieldtype": "Password",
+   "label": "Supervisor Approval PIN"
+  },
+  {
+   "fieldname": "section_bin",
+   "fieldtype": "Section Break",
+   "label": "Bin-Directed Picking"
+  },
+  {
+   "default": "0",
+   "description": "Direct pickers bin-by-bin using Bin Inventory. Off = flat coil scanning.",
+   "fieldname": "bin_picking_enabled",
+   "fieldtype": "Check",
+   "label": "Enable Bin-Directed Picking"
+  },
+  {
+   "default": "Identity",
+   "description": "Identity = scanned bin QR is the bin code. Regex Extract = capture group 1 is the bin code.",
+   "fieldname": "bin_decode_rule",
+   "fieldtype": "Select",
+   "label": "Bin QR Decode Rule",
+   "options": "Identity\nRegex Extract"
+  },
+  {
+   "depends_on": "eval:doc.bin_decode_rule=='Regex Extract'",
+   "fieldname": "bin_decode_regex",
+   "fieldtype": "Data",
+   "label": "Bin QR Decode Regex (group 1 = bin code)"
+  },
+  {
+   "fieldname": "column_break_bin",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "Allow scanning a coil whose bin is not the one currently open.",
+   "fieldname": "allow_pick_outside_bin",
+   "fieldtype": "Check",
+   "label": "Allow Pick Outside Active Bin"
+  },
+  {
+   "default": "1",
+   "description": "Mark a coil's Bin Inventory row as Picked when it is loaded.",
+   "fieldname": "mark_picked_on_load",
+   "fieldtype": "Check",
+   "label": "Mark Picked on Load"
+  },
+  {
+   "fieldname": "section_gi",
+   "fieldtype": "Section Break",
+   "label": "SAP Goods Issue (outbound)"
+  },
+  {
+   "default": "0",
+   "description": "Post a goods-issue confirmation to SAP when a truck completes loading.",
+   "fieldname": "gi_enabled",
+   "fieldtype": "Check",
+   "label": "Send Goods-Issue Confirmation"
+  },
+  {
+   "description": "OAuth2 token endpoint (client-credentials grant).",
+   "fieldname": "sap_token_url",
+   "fieldtype": "Data",
+   "label": "OAuth2 Token URL"
+  },
+  {
+   "fieldname": "sap_client_id",
+   "fieldtype": "Data",
+   "label": "OAuth2 Client ID"
+  },
+  {
+   "fieldname": "sap_client_secret",
+   "fieldtype": "Password",
+   "label": "OAuth2 Client Secret"
+  },
+  {
+   "description": "Optional OAuth2 scope.",
+   "fieldname": "sap_scope",
+   "fieldtype": "Data",
+   "label": "OAuth2 Scope"
+  },
+  {
+   "description": "SAP endpoint that accepts the goods-issue confirmation (POST JSON).",
+   "fieldname": "sap_gi_url",
+   "fieldtype": "Data",
+   "label": "Goods-Issue URL"
+  },
+  {
+   "fieldname": "column_break_gi",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "description": "Verify the TLS certificate of the SAP endpoint. Turn off only for a trusted self-signed middleware.",
+   "fieldname": "verify_tls",
+   "fieldtype": "Check",
+   "label": "Verify TLS"
+  },
+  {
+   "default": "30",
+   "fieldname": "sap_gi_timeout",
+   "fieldtype": "Int",
+   "label": "Request Timeout (s)"
+  },
+  {
+   "default": "8",
+   "fieldname": "gi_max_attempts",
+   "fieldtype": "Int",
+   "label": "Max Send Attempts"
+  },
+  {
+   "default": "1",
+   "description": "Auto-send the moment a truck reaches full Completed.",
+   "fieldname": "gi_auto_send_full",
+   "fieldtype": "Check",
+   "label": "Auto-send on Full Completion"
+  },
+  {
+   "default": "1",
+   "description": "Hold short-load (partial) confirmations until a supervisor releases them from the console.",
+   "fieldname": "gi_hold_short_for_review",
+   "fieldtype": "Check",
+   "label": "Hold Short-loads for Review"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-06-22 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "SBX WMSLite",
+ "name": "WMSLite Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Loading Supervisor",
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Loading Operator"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

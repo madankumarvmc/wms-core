@@ -1,0 +1,822 @@
+{% raw %}<!-- rendered by Frappe www; context provides csrf_token, full_name -->{% endraw %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+	<title>WMSLite — Loading</title>
+	<link rel="manifest" href="/assets/sbx_wmslite/manifest.json" />
+	<meta name="theme-color" content="#e97b3a" />
+	<link rel="apple-touch-icon" href="/assets/sbx_wmslite/icons/icon-180.png" />
+	<link rel="stylesheet" href="/assets/sbx_wmslite/css/stackbox.css" />
+	<style>
+		* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+		body { margin: 0; background: var(--sb-bg); color: var(--sb-ink);
+			font-family: var(--sb-font-body, 'Inter', sans-serif); padding-bottom: 88px; }
+		.topbar { position: sticky; top: 0; z-index: 20; background: var(--sb-card);
+			border-bottom: 1px solid var(--sb-line); padding: 10px 14px;
+			display: flex; align-items: center; gap: 10px; }
+		.topbar img.logo { height: 22px; }
+		.topbar .title { font-family: var(--sb-font-display, 'Oswald'); text-transform: uppercase;
+			letter-spacing: .03em; font-weight: 700; font-size: 15px; }
+		.spacer { flex: 1; }
+		.net { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: var(--sb-pill);
+			text-transform: uppercase; letter-spacing: .04em; }
+		.net.on { background: var(--sb-green-bg, #e7f6ee); color: var(--sb-green, #1f9d57); }
+		.net.off { background: var(--sb-amber-bg, #fdf2e0); color: var(--sb-amber, #b9770e); }
+		.qbadge { font-size: 11px; font-weight: 700; background: var(--sb-blue-bg, #e9f1fb);
+			color: var(--sb-blue, #2f6db5); padding: 3px 9px; border-radius: var(--sb-pill); display: none; }
+		.wrap { padding: 14px; max-width: 640px; margin: 0 auto; }
+		.banner { padding: 11px 14px; border-radius: var(--sb-radius-sm); font-weight: 600;
+			margin-bottom: 12px; font-size: 14px; display: none; }
+		.banner.pass { background: var(--sb-green-bg, #e7f6ee); color: var(--sb-green, #1f9d57); display: block; }
+		.banner.fail { background: var(--sb-amber-bg, #fdf2e0); color: #a23b2e; display: block; }
+		.banner.info { background: var(--sb-blue-bg, #e9f1fb); color: var(--sb-blue, #2f6db5); display: block; }
+		.scan-input { width: 100%; font-size: 18px; padding: 14px; border: 2px solid var(--sb-orange);
+			border-radius: var(--sb-radius-sm); outline: none; font-weight: 600; letter-spacing: .02em; }
+		.hint { color: var(--sb-muted); font-size: 12px; margin-top: 6px; }
+		.truck-card { display: flex; align-items: center; gap: 12px; }
+		.truck-card .big { font-size: 18px; font-weight: 700; }
+		.coil { display: flex; align-items: center; gap: 10px; padding: 11px 12px;
+			border: 1px solid var(--sb-line); border-radius: var(--sb-radius-sm); margin-bottom: 8px;
+			background: var(--sb-card); }
+		.coil .code { font-weight: 700; font-size: 15px; }
+		.coil .meta { color: var(--sb-muted); font-size: 12px; }
+		.coil.loaded { border-color: var(--sb-green, #1f9d57); background: var(--sb-green-bg, #e7f6ee); }
+		.coil.skipped { opacity: .7; }
+		.coil.unplanned { border-style: dashed; }
+		.progress { height: 10px; background: var(--sb-line); border-radius: var(--sb-pill); overflow: hidden; }
+		.progress > i { display: block; height: 100%; background: var(--sb-orange); width: 0%; transition: width .3s; }
+		.counts { display: flex; gap: 16px; margin: 8px 0 2px; font-size: 13px; }
+		.counts b { font-size: 18px; display: block; }
+		.bottombar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--sb-card);
+			border-top: 1px solid var(--sb-line); padding: 12px 14px; display: flex; gap: 10px;
+			max-width: 640px; margin: 0 auto; }
+		.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 50;
+			display: none; align-items: flex-end; }
+		.scrim.show { display: flex; }
+		.sheet { background: var(--sb-card); width: 100%; max-width: 640px; margin: 0 auto;
+			border-radius: 18px 18px 0 0; padding: 18px 16px 24px; max-height: 86vh; overflow: auto; }
+		.row { display: flex; gap: 10px; align-items: center; }
+		.muted { color: var(--sb-muted); }
+		.hide { display: none !important; }
+		.chip-claim { font-size: 11px; padding: 3px 9px; border-radius: var(--sb-pill);
+			background: var(--sb-blue-bg, #e9f1fb); color: var(--sb-blue, #2f6db5); font-weight: 700; }
+		.chip-inuse { font-size: 11px; padding: 3px 9px; border-radius: var(--sb-pill);
+			background: var(--sb-amber-bg, #fdf2e0); color: var(--sb-amber, #b9770e); font-weight: 700; }
+		/* armed-coil confirm panel */
+		#armed { margin-top: 12px; }
+		.armed-card { border: 2px solid var(--sb-orange); border-radius: var(--sb-radius);
+			background: #fff7f1; padding: 16px; }
+		.armed-card .ac-code { font-family: var(--sb-font-display, 'Oswald'); font-size: 26px; font-weight: 800; line-height: 1.1; }
+		.armed-card .ac-meta { color: var(--sb-muted); font-size: 13px; margin-top: 2px; }
+		.armed-actions { display: flex; gap: 10px; margin-top: 14px; }
+		.armed-actions .sb-btn { min-height: 52px; }
+		.home-stats { display: flex; gap: 10px; margin-bottom: 14px; }
+		.home-stats .s { flex: 1; background: var(--sb-card); border: 1px solid var(--sb-line);
+			border-radius: var(--sb-radius-sm); padding: 10px 12px; text-align: center; }
+		.home-stats .s b { display: block; font-size: 22px; font-weight: 800; line-height: 1; }
+		.home-stats .s span { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--sb-muted); }
+		.tcard { display: flex; align-items: center; gap: 10px; padding: 12px 10px 12px 14px; border: 1px solid var(--sb-line);
+			border-radius: var(--sb-radius-sm); margin-bottom: 8px; background: var(--sb-card); cursor: pointer;
+			transition: background .08s ease; }
+		.tcard:active { background: var(--sb-bg); }
+		.tcard.done { border-left: 3px solid var(--sb-green, #1f9d57); }
+		.tcard .chev { color: var(--sb-muted); font-size: 20px; line-height: 1; flex: 0 0 auto; margin-left: 2px; }
+		.tcard .miniprog { height: 6px; background: var(--sb-line); border-radius: 99px; overflow: hidden; margin-top: 6px; }
+		.tcard .miniprog > i { display: block; height: 100%; background: var(--sb-orange); }
+		.empty { color: var(--sb-muted); font-size: 13px; padding: 8px 2px; }
+		/* inline/compact buttons — override the global .sb-btn width:100% */
+		.sb-btn--inline { width: auto; flex: 0 0 auto; }
+		.sb-btn--sm { padding: 9px 16px; font-size: 13px; min-height: 40px; }
+		.section-head { display: flex; align-items: center; justify-content: space-between; margin: 18px 2px 8px; }
+		.stale { background: var(--sb-amber-bg, #fdf2e0); color: var(--sb-amber, #b9770e);
+			font-size: 12px; padding: 6px 10px; border-radius: var(--sb-radius-sm); margin-bottom: 10px; }
+		/* bin-directed picking */
+		.bincard { display: flex; align-items: center; gap: 12px; padding: 13px 12px 13px 14px;
+			border: 1px solid var(--sb-line); border-radius: var(--sb-radius-sm); margin-bottom: 8px;
+			background: var(--sb-card); cursor: pointer; transition: background .08s ease; }
+		.bincard:active { background: var(--sb-bg); }
+		.bincard.done { border-left: 3px solid var(--sb-green, #1f9d57); opacity: .8; }
+		.bincard.unknown { border-style: dashed; }
+		.bincard .bc-code { font-family: var(--sb-font-display, 'Oswald'); font-size: 19px; font-weight: 800; line-height: 1.05; }
+		.bincard .bc-loc { color: var(--sb-muted); font-size: 12px; margin-top: 2px; }
+		.bincard .chev { color: var(--sb-muted); font-size: 20px; line-height: 1; flex: 0 0 auto; }
+		.bin-context { display: flex; align-items: center; gap: 12px; margin-top: 12px;
+			background: #fff7f1; border: 1px solid var(--sb-orange); border-radius: var(--sb-radius-sm); padding: 11px 12px; }
+		.bin-context .bx-code { font-family: var(--sb-font-display, 'Oswald'); font-size: 18px; font-weight: 800; line-height: 1.05; }
+		.bin-context .bx-loc { color: var(--sb-muted); font-size: 12px; }
+	</style>
+</head>
+<body class="sb-body">
+	<div class="topbar">
+		<img class="logo" src="/assets/sbx_wmslite/brand/stackbox-logo.svg" alt="StackBox" />
+		<span class="title">Loading</span>
+		<span class="spacer"></span>
+		<span class="qbadge" id="qbadge">0 queued</span>
+		<span class="net on" id="net">online</span>
+	</div>
+
+	<div class="wrap">
+		<div class="banner" id="banner"></div>
+
+		<!-- SCREEN 0: home -->
+		<section id="screen-home">
+			<div id="home-stale"></div>
+			<div id="home-stats" class="home-stats"></div>
+			<div class="sb-card" style="padding:14px;">
+				<form id="truck-form" autocomplete="off" action="javascript:void(0)">
+					<input class="scan-input" id="truck-input" placeholder="Scan or type truck number"
+						autocomplete="off" autocapitalize="characters" enterkeyhint="search" inputmode="text" />
+					<button type="submit" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;"></button>
+				</form>
+				<div class="hint">Scan a truck barcode, or type and tap Go — or pick one below.</div>
+			</div>
+			<div id="truck-results" style="margin-top:14px;"></div>
+
+			<div class="section-head">
+				<div class="sb-label">To Load</div>
+				<button id="home-refresh" class="sb-btn sb-btn--ghost sb-btn--inline sb-btn--sm" title="Refresh">↻ Refresh</button>
+			</div>
+			<div id="list-pending"></div>
+
+			<div class="sb-label" style="margin:18px 2px 8px;">Loaded Today</div>
+			<div id="list-loaded"></div>
+		</section>
+
+		<!-- SCREEN 2: coils -->
+		<section id="screen-coils" class="hide">
+			<div class="sb-card" style="padding:16px;">
+				<div class="row">
+					<div>
+						<div class="sb-label">Truck</div>
+						<div style="font-size:22px;font-weight:800;" id="c-truck">—</div>
+					</div>
+					<span class="spacer"></span>
+					<span class="chip-claim hide" id="c-claim"></span>
+				</div>
+				<div class="counts">
+					<div><b id="c-loaded">0</b><span class="muted">Loaded</span></div>
+					<div><b id="c-pending">0</b><span class="muted">Pending</span></div>
+					<div><b id="c-skipped">0</b><span class="muted">Skipped</span></div>
+					<div><b id="c-total">0</b><span class="muted">Total</span></div>
+				</div>
+				<div class="progress"><i id="c-bar"></i></div>
+			</div>
+
+			<!-- BIN NAV: bins-to-visit (bin-directed mode, before a bin is opened) -->
+			<div id="bin-nav" class="hide">
+				<div class="sb-card" style="padding:14px;margin-top:12px;">
+					<form id="bin-form" autocomplete="off" action="javascript:void(0)">
+						<input class="scan-input" id="bin-input" placeholder="Scan or type bin code" autocomplete="off"
+							autocapitalize="characters" enterkeyhint="go" inputmode="text" />
+						<button type="submit" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;"></button>
+					</form>
+					<div class="hint">Go to a bin, scan its code — or tap a bin below.</div>
+				</div>
+				<div id="bin-list" style="margin-top:14px;"></div>
+			</div>
+
+			<!-- COIL PANE: scanning coils (flat mode, or the coils inside an opened bin) -->
+			<div id="coil-pane">
+				<div id="bin-context" class="hide"></div>
+
+				<div class="sb-card" style="padding:14px;margin-top:12px;">
+					<form id="coil-form" autocomplete="off" action="javascript:void(0)">
+						<input class="scan-input" id="coil-input" placeholder="Scan coil QR" autocomplete="off"
+							autocapitalize="characters" enterkeyhint="done" inputmode="text" />
+						<button type="submit" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;"></button>
+					</form>
+					<div class="hint">Scan a coil, then tap <b>Confirm Coil Load</b>.</div>
+				</div>
+
+				<!-- inline armed-coil confirm panel (appears after a scan) -->
+				<div id="armed" class="hide"></div>
+
+				<div id="coil-list" style="margin-top:14px;"></div>
+			</div>
+		</section>
+
+		<!-- SCREEN 3: read-only loaded summary -->
+		<section id="screen-summary" class="hide"></section>
+	</div>
+
+	<!-- bottom action bar (coil screen) -->
+	<div class="bottombar hide" id="bottombar">
+		<button class="sb-btn sb-btn--ghost" id="btn-back" style="flex:1;">Back</button>
+		<button class="sb-btn sb-btn--primary" id="btn-complete" style="flex:2;">Complete Loading</button>
+	</div>
+
+	<!-- generic modal sheet -->
+	<div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
+
+	<script>
+		const CSRF = "{{ csrf_token }}";
+		window.WMS_CSRF = CSRF; // exposed for E2E seeding helpers
+		const USER = "{{ full_name }}";
+		let DB = null, CFG = { undo_window_seconds: 120, allow_overscan: 0, qr_decode_rule: "Identity", qr_decode_regex: "",
+			bin_picking_enabled: 0, bin_decode_rule: "Identity", bin_decode_regex: "", allow_pick_outside_bin: 0 };
+		let PLAN = null;          // current plan progress + coils (cached)
+		let pendingScan = null;   // coil awaiting confirm
+		let BIN_MODE = false;     // this plan uses bin-directed picking
+		let currentBin = null;    // opened bin code (or UNKNOWN_BIN); null = showing bins-to-visit list
+		const UNKNOWN_BIN = "__UNKNOWN__";
+		const binKey = (c) => c.bin_code || UNKNOWN_BIN;
+
+		// ---------- utilities ----------
+		const $ = (id) => document.getElementById(id);
+		const esc = (s) => (s == null ? "" : String(s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch])));
+		const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : "ev-" + Date.now() + "-" + Math.floor(Math.random() * 1e9));
+		function banner(msg, kind) {
+			const b = $("banner"); b.className = "banner " + (kind || "info"); b.textContent = msg;
+			if (navigator.vibrate) navigator.vibrate(kind === "fail" ? [80, 40, 80] : 40);
+			clearTimeout(b._t); b._t = setTimeout(() => { b.className = "banner"; }, 3500);
+		}
+		function setNet() {
+			const n = $("net");
+			if (navigator.onLine) { n.className = "net on"; n.textContent = "online"; }
+			else { n.className = "net off"; n.textContent = "offline"; }
+		}
+		window.addEventListener("online", () => { setNet(); syncQueue(); });
+		window.addEventListener("offline", setNet);
+
+		// ---------- API ----------
+		async function api(method, args) {
+			const res = await fetch("/api/method/" + method, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": CSRF },
+				body: JSON.stringify(args || {}),
+			});
+			if (!res.ok) {
+				let msg = "Request failed (" + res.status + ")";
+				try { const j = await res.json(); msg = (j._server_messages ? JSON.parse(j._server_messages).map(m => JSON.parse(m).message).join("\n") : j.message) || msg; } catch (e) {}
+				throw new Error(msg);
+			}
+			return (await res.json()).message;
+		}
+
+		// ---------- IndexedDB ----------
+		function openDB() {
+			return new Promise((resolve, reject) => {
+				const rq = indexedDB.open("wmslite_db", 1);
+				rq.onupgradeneeded = (e) => {
+					const d = e.target.result;
+					if (!d.objectStoreNames.contains("plans")) d.createObjectStore("plans", { keyPath: "name" });
+					if (!d.objectStoreNames.contains("queue")) d.createObjectStore("queue", { keyPath: "client_event_id" });
+					if (!d.objectStoreNames.contains("kv")) d.createObjectStore("kv", { keyPath: "k" });
+				};
+				rq.onsuccess = (e) => { DB = e.target.result; resolve(); };
+				rq.onerror = () => reject(rq.error);
+			});
+		}
+		function idb(store, mode) { return DB.transaction(store, mode).objectStore(store); }
+		function idbPut(store, val) { return new Promise((r) => { idb(store, "readwrite").put(val).onsuccess = () => r(); }); }
+		function idbGet(store, key) { return new Promise((r) => { const q = idb(store, "readonly").get(key); q.onsuccess = () => r(q.result || null); }); }
+		function idbAll(store) { return new Promise((r) => { const q = idb(store, "readonly").getAll(); q.onsuccess = () => r(q.result || []); }); }
+		function idbDel(store, key) { return new Promise((r) => { idb(store, "readwrite").delete(key).onsuccess = () => r(); }); }
+		async function queueCount() { return (await idbAll("queue")).length; }
+		async function refreshQueueBadge() {
+			const n = await queueCount(); const b = $("qbadge");
+			if (n > 0) { b.style.display = "inline-block"; b.textContent = n + " queued"; }
+			else b.style.display = "none";
+		}
+
+		// ---------- offline queue ----------
+		async function enqueue(evt) {
+			evt.client_event_id = evt.client_event_id || uuid();
+			await idbPut("queue", evt);
+			await refreshQueueBadge();
+			return evt.client_event_id;
+		}
+		async function syncQueue() {
+			if (!navigator.onLine || !DB) return;
+			const rows = await idbAll("queue");
+			if (!rows.length) return;
+			try {
+				const results = await api("sbx_wmslite.api.submit_offline_queue", { events: JSON.stringify(rows) });
+				let synced = 0;
+				for (const r of results) { if (r.ok !== false) { await idbDel("queue", r.client_event_id); synced++; } }
+				await refreshQueueBadge();
+				if (synced) banner("✅ Synced " + synced + " offline action(s)", "pass");
+				if (PLAN) await loadPlan(PLAN.name, true);
+			} catch (e) { /* stay queued; will retry on next online */ }
+		}
+
+		// ---------- SCREEN 1: truck lookup ----------
+		async function findTrucks(q) {
+			const box = $("truck-results"); box.innerHTML = "";
+			if (!q) return;
+			let rows = [];
+			try { rows = await api("sbx_wmslite.api.lookup_trucks", { truck_number: q }); }
+			catch (e) { banner(e.message, "fail"); return; }
+			if (!rows.length) { box.innerHTML = '<div class="muted" style="padding:8px;">No open trucks match “' + q + '”.</div>'; return; }
+			for (const r of rows) {
+				const pending = r.pending_coils, total = r.total_coils;
+				const card = document.createElement("div");
+				card.className = "sb-card"; card.style.cssText = "padding:14px;margin-bottom:10px;cursor:pointer;";
+				card.innerHTML =
+					'<div class="truck-card"><div><div class="big">' + r.truck_number + '</div>' +
+					'<div class="meta muted">' + r.plan_status + ' · ' + r.loaded_coils + '/' + total + ' loaded</div></div>' +
+					'<span class="spacer"></span>' +
+					(r.claimed_by ? '<span class="chip-claim">in use</span>' : '<span class="sb-chip is-info">' + pending + ' to load</span>') +
+					'</div>';
+				card.onclick = () => selectPlan(r.name);
+				box.appendChild(card);
+			}
+		}
+
+		async function selectPlan(name) {
+			try {
+				const c = await api("sbx_wmslite.api.claim_plan", { plan: name });
+				if (c.conflict) { return askTakeover(name, c.claimed_by); }
+				await loadPlan(name, true);
+				if (c.took_over) banner("Took over from previous operator", "info");
+			} catch (e) { banner(e.message, "fail"); }
+		}
+
+		function askTakeover(name, who) {
+			openSheet(
+				'<h3 class="sb-h2">Truck in use</h3>' +
+				'<p>This truck is currently claimed by <b>' + (who || "another operator") + '</b>.</p>' +
+				'<div class="row" style="margin-top:14px;">' +
+				'<button class="sb-btn sb-btn--ghost" style="flex:1;" onclick="closeSheet()">Cancel</button>' +
+				'<button class="sb-btn sb-btn--orange" style="flex:1;" id="do-takeover">Take over</button></div>'
+			);
+			$("do-takeover").onclick = async () => {
+				closeSheet();
+				try { const c = await api("sbx_wmslite.api.claim_plan", { plan: name, force: 1 }); await loadPlan(name, true); banner("Took over loading", "info"); }
+				catch (e) { banner(e.message, "fail"); }
+			};
+		}
+
+		// ---------- SCREEN 2: coils ----------
+		async function loadPlan(name, online) {
+			let p = null;
+			if (online && navigator.onLine) {
+				try { p = await api("sbx_wmslite.api.get_plan", { plan: name }); await idbPut("plans", p); }
+				catch (e) { p = await idbGet("plans", name); }
+			} else { p = await idbGet("plans", name); }
+			if (!p) { banner("Plan not available offline", "fail"); return; }
+			PLAN = p;
+			BIN_MODE = !!p.bin_picking;
+			currentBin = null;
+			renderPlan();
+			showScreen("coils");
+			setTimeout(() => $(BIN_MODE ? "bin-input" : "coil-input").focus(), 150);
+		}
+
+		function renderPlan() {
+			const p = PLAN;
+			$("c-truck").textContent = p.truck_number;
+			$("c-loaded").textContent = p.loaded_coils;
+			$("c-pending").textContent = p.pending_coils;
+			$("c-skipped").textContent = p.skipped_coils;
+			$("c-total").textContent = p.total_coils;
+			$("c-bar").style.width = (p.total_coils ? Math.round(100 * p.loaded_coils / p.total_coils) : 0) + "%";
+			const claim = $("c-claim");
+			if (p.claimed_by) { claim.classList.remove("hide"); claim.textContent = "claimed by you"; }
+			else claim.classList.add("hide");
+
+			if (BIN_MODE && currentBin === null) { showBinNav(true); renderBins(); }
+			else { showBinNav(false); renderCoilList(); }
+		}
+
+		function showBinNav(on) {
+			$("bin-nav").classList.toggle("hide", !on);
+			$("coil-pane").classList.toggle("hide", on);
+		}
+
+		// ---------- bins-to-visit (bin-directed mode) ----------
+		function computeBins() {
+			const map = new Map();
+			for (const c of PLAN.coils) {
+				const k = binKey(c);
+				let g = map.get(k);
+				if (!g) {
+					g = { bin_code: k, label: c.bin_code || "Location unknown", zone: c.zone || "", aisle: c.aisle || "",
+						unknown: !c.bin_code, total: 0, loaded: 0, pending: 0 };
+					map.set(k, g);
+				}
+				g.total++;
+				if (c.coil_status === "Loaded") g.loaded++;
+				else if (c.coil_status === "Pending") g.pending++;
+			}
+			return Array.from(map.values()).sort((a, b) => {
+				if (a.unknown !== b.unknown) return a.unknown ? 1 : -1;  // unknown bin last
+				return (a.zone || "").localeCompare(b.zone || "") || (a.aisle || "").localeCompare(b.aisle || "") || a.label.localeCompare(b.label);
+			});
+		}
+
+		function binLoc(b) {
+			if (b.unknown) return "Coils with no known bin";
+			return [b.zone && ("Zone " + b.zone), b.aisle && ("Aisle " + b.aisle)].filter(Boolean).join(" · ") || "—";
+		}
+
+		function renderBins() {
+			const list = $("bin-list"); const bins = computeBins();
+			if (!bins.length) { list.innerHTML = '<div class="empty">No coils on this truck.</div>'; return; }
+			list.innerHTML = bins.map((b) => {
+				const done = b.pending === 0;
+				const badge = done ? '<span class="sb-chip is-pass">done</span>' : '<span class="sb-chip is-info">' + b.pending + ' to pick</span>';
+				return '<div class="bincard' + (done ? ' done' : '') + (b.unknown ? ' unknown' : '') + '" data-bin="' + esc(b.bin_code) + '">' +
+					'<div style="flex:1;min-width:0;"><div class="bc-code">' + esc(b.label) + '</div>' +
+					'<div class="bc-loc">' + esc(binLoc(b)) + ' · ' + b.loaded + '/' + b.total + ' picked</div></div>' +
+					badge + '<span class="chev">›</span></div>';
+			}).join("");
+			list.querySelectorAll(".bincard").forEach((el) => el.onclick = () => openBin(el.getAttribute("data-bin")));
+		}
+
+		function openBin(code) {
+			currentBin = code;
+			$("armed").innerHTML = ""; $("armed").classList.add("hide"); pendingScan = null;
+			showBinNav(false); renderCoilList();
+			setTimeout(() => $("coil-input").focus(), 120);
+		}
+
+		function backToBins() {
+			currentBin = null;
+			$("armed").innerHTML = ""; $("armed").classList.add("hide"); pendingScan = null;
+			showBinNav(true); renderBins();
+			setTimeout(() => $("bin-input").focus(), 120);
+		}
+
+		function handleBinScan(raw) {
+			raw = (raw || "").trim(); if (!raw) return;
+			$("bin-input").value = "";
+			const code = decodeBinLocal(raw);
+			const hit = computeBins().find((b) => !b.unknown && b.bin_code.toLowerCase() === code.toLowerCase());
+			if (!hit) { banner("No coils to pick in bin " + code, "fail"); return; }
+			if (hit.pending === 0) banner("Bin " + hit.label + " already fully picked", "info");
+			openBin(hit.bin_code);
+		}
+
+		function decodeBinLocal(raw) {
+			raw = (raw || "").trim();
+			if (CFG.bin_decode_rule === "Regex Extract" && CFG.bin_decode_regex) {
+				try { const m = new RegExp(CFG.bin_decode_regex).exec(raw); if (m && m[1]) return m[1].trim(); } catch (e) {}
+			}
+			return raw;
+		}
+
+		// is the scanned coil in a different bin than the one we're standing at?
+		// returns the coil's actual bin label if mismatched, else null
+		function binMismatch(coil_barcode) {
+			if (!BIN_MODE || currentBin === null) return null;
+			const row = PLAN.coils.find((c) => c.coil_barcode === coil_barcode);
+			const actual = row ? binKey(row) : UNKNOWN_BIN;
+			if (actual === currentBin) return null;
+			return (row && row.bin_code) ? row.bin_code : "Location unknown";
+		}
+
+		// ---------- coil list (flat mode, or coils within an opened bin) ----------
+		function renderCoilList() {
+			const p = PLAN;
+			const bx = $("bin-context");
+			if (BIN_MODE && currentBin !== null) {
+				const inBin = p.coils.filter((c) => binKey(c) === currentBin);
+				const sample = inBin[0] || {};
+				const unknown = currentBin === UNKNOWN_BIN;
+				const label = unknown ? "Location unknown" : currentBin;
+				const loc = binLoc({ unknown: unknown, zone: sample.zone, aisle: sample.aisle });
+				bx.innerHTML =
+					'<button class="sb-btn sb-btn--ghost sb-btn--inline sb-btn--sm" id="bx-back">‹ Bins</button>' +
+					'<div style="flex:1;min-width:0;"><div class="bx-code">' + esc(label) + '</div><div class="bx-loc">' + esc(loc) + '</div></div>';
+				bx.classList.remove("hide");
+				$("bx-back").onclick = backToBins;
+			} else { bx.classList.add("hide"); bx.innerHTML = ""; }
+
+			const list = $("coil-list"); list.innerHTML = "";
+			let coils = p.coils.slice();
+			if (BIN_MODE && currentBin !== null) coils = coils.filter((c) => binKey(c) === currentBin);
+			const sorted = coils.sort((a, b) =>
+				(a.coil_status === "Loaded") - (b.coil_status === "Loaded") || a.coil_barcode.localeCompare(b.coil_barcode));
+			for (const c of sorted) {
+				const el = document.createElement("div");
+				el.className = "coil " + (c.coil_status === "Loaded" ? "loaded" : c.coil_status === "Skipped" ? "skipped" : "") + (c.unplanned ? " unplanned" : "");
+				let right = "";
+				if (c.coil_status === "Loaded") right = '<button class="sb-btn sb-btn--ghost sb-btn--inline sb-btn--sm" onclick="undoCoil(\'' + c.coil_barcode.replace(/'/g, "\\'") + '\')">Undo</button>';
+				else if (c.coil_status === "Skipped") right = '<span class="sb-chip is-fail">' + (c.skip_reason || "Skipped") + '</span>';
+				else right = '<span class="sb-chip is-info">pending</span>';
+				const binTag = (!BIN_MODE || currentBin === null) && c.bin_code ? ' · ' + esc(c.bin_code) : '';
+				el.innerHTML =
+					'<div style="flex:1;"><div class="code">' + c.coil_barcode + (c.unplanned ? ' <span class="muted">(unplanned)</span>' : '') + '</div>' +
+					'<div class="meta">' + (c.material_grade || "") + (c.weight ? " · " + c.weight + " kg" : "") + binTag + '</div></div>' + right;
+				list.appendChild(el);
+			}
+		}
+
+		// scan a coil
+		async function handleCoilScan(raw) {
+			raw = (raw || "").trim(); if (!raw) return;
+			$("coil-input").value = "";
+			$("armed").innerHTML = ""; $("armed").classList.add("hide");  // clear any prior armed coil
+			if (navigator.onLine) {
+				try {
+					const r = await api("sbx_wmslite.api.scan_coil", { plan: PLAN.name, raw_qr: raw });
+					if (r.matched) {
+						const wrong = binMismatch(r.coil.coil_barcode);
+						if (wrong && !CFG.allow_pick_outside_bin) { logRejectMaybe(r.coil.coil_barcode, raw, "wrong_bin"); return banner("Coil belongs to bin " + wrong + " — not this bin", "fail"); }
+						if (wrong) banner("Heads up: this coil's bin is " + wrong, "info");
+						return armCoil(r.coil, raw);
+					}
+					if (r.reason === "already_loaded") { logRejectMaybe(r.coil_barcode, raw, "already_loaded"); return banner("Already loaded: " + (r.coil_barcode || raw), "fail"); }
+					// not on plan
+					if (r.allow_overscan) return overscanSheet(r.decoded_coil_id || raw, raw);
+					logRejectMaybe(null, raw, "not_on_plan");
+					return banner("Not on this truck: " + (r.decoded_coil_id || raw), "fail");
+				} catch (e) { banner(e.message, "fail"); }
+			} else {
+				// offline: decode locally + match against cached plan
+				const coil_id = decodeLocal(raw);
+				const row = PLAN.coils.find((c) => c.coil_barcode === coil_id);
+				if (!row) { if (CFG.allow_overscan) return overscanSheet(coil_id, raw); return banner("Not on this truck (offline): " + coil_id, "fail"); }
+				if (row.coil_status === "Loaded") return banner("Already loaded: " + coil_id, "fail");
+				const wrong = binMismatch(row.coil_barcode);
+				if (wrong && !CFG.allow_pick_outside_bin) return banner("Coil belongs to bin " + wrong + " — not this bin", "fail");
+				if (wrong) banner("Heads up: this coil's bin is " + wrong, "info");
+				return armCoil(row, raw);
+			}
+		}
+
+		function decodeLocal(raw) {
+			raw = (raw || "").trim();
+			if (CFG.qr_decode_rule === "Regex Extract" && CFG.qr_decode_regex) {
+				try { const m = new RegExp(CFG.qr_decode_regex).exec(raw); if (m && m[1]) return m[1].trim(); } catch (e) {}
+			}
+			return raw;
+		}
+
+		// inline armed-coil panel (under the scan input)
+		function clearArmed() {
+			$("armed").classList.add("hide");
+			$("armed").innerHTML = "";
+			pendingScan = null;
+			$("coil-input").focus();
+		}
+
+		function armCoil(coil, raw) {
+			pendingScan = { coil, raw };
+			$("armed").innerHTML =
+				'<div class="armed-card"><div class="sb-label">Ready to load</div>' +
+				'<div class="ac-code">' + esc(coil.coil_barcode) + '</div>' +
+				'<div class="ac-meta">' + esc(coil.material_grade || "") + (coil.weight ? " · " + coil.weight + " kg" : "") + '</div>' +
+				'<div class="armed-actions">' +
+				'<button class="sb-btn sb-btn--ghost" style="flex:1;" id="ac-cancel">Cancel</button>' +
+				'<button class="sb-btn sb-btn--primary" style="flex:2;" id="ac-confirm">Confirm Coil Load</button></div></div>';
+			$("armed").classList.remove("hide");
+			$("ac-cancel").onclick = clearArmed;
+			$("ac-confirm").onclick = doConfirm;
+			$("armed").scrollIntoView({ behavior: "smooth", block: "nearest" });
+		}
+
+		async function doConfirm() {
+			const { coil, raw } = pendingScan; clearArmed();
+			const cid = uuid();
+			// optimistic local update
+			const row = PLAN.coils.find((c) => c.coil_barcode === coil.coil_barcode);
+			if (row) { row.coil_status = "Loaded"; recount(); renderPlan(); }
+			banner("✅ Loaded " + coil.coil_barcode, "pass");
+			if (navigator.onLine) {
+				try { const r = await api("sbx_wmslite.api.confirm_load", { plan: PLAN.name, coil_barcode: coil.coil_barcode, scanned_qr: raw, client_event_id: cid }); await syncPlanFrom(r); }
+				catch (e) { await enqueue({ type: "confirm_load", plan: PLAN.name, coil_barcode: coil.coil_barcode, scanned_qr: raw, client_event_id: cid }); }
+			} else {
+				await enqueue({ type: "confirm_load", plan: PLAN.name, coil_barcode: coil.coil_barcode, scanned_qr: raw, client_event_id: cid });
+				await idbPut("plans", PLAN);
+			}
+			maybeBinDone();
+			$("coil-input").focus();
+		}
+
+		// in bin mode, hop back to the bins list once the current bin is fully picked
+		function maybeBinDone() {
+			if (!BIN_MODE || currentBin === null) return;
+			const left = PLAN.coils.filter((c) => binKey(c) === currentBin && c.coil_status === "Pending").length;
+			if (left === 0) { banner("Bin complete ✅ — on to the next", "pass"); setTimeout(backToBins, 900); }
+		}
+
+		function overscanSheet(coil_id, raw) {
+			$("armed").innerHTML =
+				'<div class="armed-card" style="border-color:var(--sb-amber,#b9770e);background:#fdf6ec;">' +
+				'<div class="sb-label">Coil not on plan</div>' +
+				'<div class="ac-code">' + esc(coil_id) + '</div>' +
+				'<div class="ac-meta">Not in the SAP plan — adding is logged as an unplanned load.</div>' +
+				'<div class="armed-actions">' +
+				'<button class="sb-btn sb-btn--ghost" style="flex:1;" id="ac-cancel">Cancel</button>' +
+				'<button class="sb-btn sb-btn--orange" style="flex:2;" id="do-over">Add &amp; Load</button></div></div>';
+			$("armed").classList.remove("hide");
+			$("ac-cancel").onclick = clearArmed;
+			$("armed").scrollIntoView({ behavior: "smooth", block: "nearest" });
+			$("do-over").onclick = async () => {
+				clearArmed(); const cid = uuid();
+				PLAN.coils.push({ coil_barcode: coil_id, coil_status: "Loaded", unplanned: 1 }); recount(); renderPlan();
+				banner("✅ Added & loaded " + coil_id, "pass");
+				if (navigator.onLine) {
+					try { const r = await api("sbx_wmslite.api.overscan_add", { plan: PLAN.name, coil_barcode: coil_id, scanned_qr: raw, client_event_id: cid }); await syncPlanFrom(r); }
+					catch (e) { await enqueue({ type: "overscan_add", plan: PLAN.name, coil_barcode: coil_id, scanned_qr: raw, client_event_id: cid }); }
+				} else { await enqueue({ type: "overscan_add", plan: PLAN.name, coil_barcode: coil_id, scanned_qr: raw, client_event_id: cid }); await idbPut("plans", PLAN); }
+			};
+		}
+
+		async function undoCoil(code) {
+			const cid = uuid();
+			const row = PLAN.coils.find((c) => c.coil_barcode === code);
+			if (row && row.unplanned) { PLAN.coils = PLAN.coils.filter((c) => c.coil_barcode !== code); }
+			else if (row) { row.coil_status = "Pending"; }
+			recount(); renderPlan(); banner("Undone " + code, "info");
+			if (navigator.onLine) {
+				try { const r = await api("sbx_wmslite.api.undo_last_load", { plan: PLAN.name, coil_barcode: code, client_event_id: cid }); await syncPlanFrom(r); }
+				catch (e) { await enqueue({ type: "undo", plan: PLAN.name, coil_barcode: code, client_event_id: cid }); }
+			} else { await enqueue({ type: "undo", plan: PLAN.name, coil_barcode: code, client_event_id: cid }); await idbPut("plans", PLAN); }
+		}
+
+		function logRejectMaybe(code, raw, reason) {
+			if (!navigator.onLine) { enqueue({ type: "reject", plan: PLAN.name, coil_barcode: code, scanned_qr: raw, reason: reason, client_event_id: uuid() }); return; }
+			api("sbx_wmslite.api.log_reject", { plan: PLAN.name, coil_barcode: code, scanned_qr: raw, reason: reason }).catch(() => {});
+		}
+
+		function recount() {
+			const c = PLAN.coils;
+			PLAN.loaded_coils = c.filter((x) => x.coil_status === "Loaded").length;
+			PLAN.skipped_coils = c.filter((x) => x.coil_status === "Skipped").length;
+			PLAN.total_coils = c.length;
+			PLAN.pending_coils = PLAN.total_coils - PLAN.loaded_coils - PLAN.skipped_coils;
+		}
+		async function syncPlanFrom(r) {
+			if (!r) return;
+			["plan_status", "loaded_coils", "pending_coils", "skipped_coils", "total_coils"].forEach((k) => { if (k in r) PLAN[k] = r[k]; });
+			if (r.plan_status) PLAN.plan_status = r.plan_status;
+			await idbPut("plans", PLAN); renderPlan();
+		}
+
+		// ---------- complete / short-load ----------
+		function onComplete() {
+			recount();
+			if (PLAN.pending_coils === 0) {
+				banner("Truck complete ✅", "pass");
+				setTimeout(goHome, 900);
+				return;
+			}
+			shortLoadSheet();
+		}
+
+		function shortLoadSheet() {
+			const pend = PLAN.coils.filter((c) => c.coil_status === "Pending");
+			let rows = pend.map((c, i) =>
+				'<div class="coil"><div style="flex:1;"><div class="code">' + c.coil_barcode + '</div></div>' +
+				'<select class="sb-input" data-code="' + c.coil_barcode + '" style="max-width:160px;">' +
+				['Damaged', 'Not Available', 'Quality Hold', 'Truck Full', 'Other'].map((r) => '<option>' + r + '</option>').join("") +
+				'</select></div>').join("");
+			openSheet(
+				'<div class="sb-label">Short-load</div>' +
+				'<h2 class="sb-h2" style="margin:.2em 0;">' + pend.length + ' coil(s) not loaded</h2>' +
+				'<p class="muted">Give a reason for each. A supervisor must approve completion (online).</p>' +
+				'<div style="margin:12px 0;">' + rows + '</div>' +
+				'<div class="row"><button class="sb-btn sb-btn--ghost" style="flex:1;" onclick="closeSheet()">Cancel</button>' +
+				'<button class="sb-btn sb-btn--primary" style="flex:2;" id="do-short">Request Approval</button></div>'
+			);
+			$("do-short").onclick = doShortLoad;
+		}
+
+		async function doShortLoad() {
+			if (!navigator.onLine) { banner("Short-load approval needs a connection", "fail"); return; }
+			const skips = Array.from(document.querySelectorAll("#sheet select[data-code]")).map((s) => ({ coil_barcode: s.getAttribute("data-code"), reason: s.value }));
+			try {
+				await api("sbx_wmslite.api.request_short_load", { plan: PLAN.name, skips: JSON.stringify(skips) });
+				approvalSheet();
+			} catch (e) { banner(e.message, "fail"); }
+		}
+
+		function approvalSheet() {
+			openSheet(
+				'<div class="sb-label">Supervisor approval</div>' +
+				'<h2 class="sb-h2" style="margin:.2em 0;">Enter approval PIN</h2>' +
+				'<input class="scan-input" id="pin-input" type="password" inputmode="numeric" placeholder="PIN" />' +
+				'<div class="row" style="margin-top:16px;">' +
+				'<button class="sb-btn sb-btn--ghost" style="flex:1;" id="do-decline">Decline</button>' +
+				'<button class="sb-btn sb-btn--primary" style="flex:2;" id="do-approve">Approve &amp; Complete</button></div>'
+			);
+			$("do-approve").onclick = async () => {
+				try { await api("sbx_wmslite.api.approve_short_load", { plan: PLAN.name, pin: $("pin-input").value }); closeSheet(); banner("Completed (short) ✅", "pass"); setTimeout(goHome, 900); }
+				catch (e) { banner(e.message, "fail"); }
+			};
+			$("do-decline").onclick = async () => {
+				try { await api("sbx_wmslite.api.decline_short_load", { plan: PLAN.name, pin: $("pin-input").value }); closeSheet(); await loadPlan(PLAN.name, true); banner("Declined — keep loading", "info"); }
+				catch (e) { banner(e.message, "fail"); }
+			};
+		}
+
+		// ---------- HOME (landing) ----------
+		function goHome() {
+			PLAN = null;
+			BIN_MODE = false;
+			currentBin = null;
+			$("truck-results").innerHTML = "";
+			$("truck-input").value = "";
+			showScreen("home");
+			loadHome();
+			setTimeout(() => $("truck-input").focus(), 100);
+		}
+
+		async function loadHome() {
+			let data = null, staleTs = 0;
+			if (navigator.onLine) {
+				try { data = await api("sbx_wmslite.api.operator_home"); await idbPut("kv", { k: "home", v: data, t: Date.now() }); }
+				catch (e) { const c = await idbGet("kv", "home"); if (c) { data = c.v; staleTs = c.t; } }
+			} else { const c = await idbGet("kv", "home"); if (c) { data = c.v; staleTs = c.t; } }
+			renderHome(data || { pending: [], loaded: [], stats: {} }, staleTs);
+		}
+
+		function tcard(t, done) {
+			const pct = t.total_coils ? Math.round(100 * t.loaded_coils / t.total_coils) : 0;
+			const claim = (!done && t.claimed_by) ? '<span class="chip-inuse">in use</span>' : "";
+			const badge = done
+				? '<span class="sb-chip is-pass">' + esc(t.plan_status) + (t.gi_status && t.gi_status !== "Not Required" ? " · GI " + esc(t.gi_status) : "") + '</span>'
+				: (t.plan_status === "Pending Approval" ? '<span class="sb-chip is-fail">awaiting approval</span>' : '<span class="sb-chip is-info">' + t.pending_coils + ' to load</span>');
+			return '<div class="tcard' + (done ? ' done' : '') + '" data-plan="' + esc(t.name) + '" data-done="' + (done ? 1 : 0) + '">' +
+				'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:16px;">' + esc(t.truck_number) + '</div>' +
+				'<div class="meta" style="color:var(--sb-muted);font-size:12px;">' + t.loaded_coils + '/' + t.total_coils + ' loaded' + (t.skipped_coils ? ' · ' + t.skipped_coils + ' skipped' : '') + '</div>' +
+				'<div class="miniprog"><i style="width:' + pct + '%"></i></div></div>' +
+				'<div style="text-align:right;">' + claim + badge + '</div>' +
+				'<span class="chev">›</span></div>';
+		}
+
+		function renderHome(data, staleTs) {
+			const s = data.stats || {};
+			let html = (staleTs ? '<div class="stale">📡 Offline — showing data as of ' + new Date(staleTs).toLocaleTimeString() + '</div>' : '');
+			$("home-stale").innerHTML = html;
+			$("home-stats").innerHTML =
+				'<div class="s"><b>' + (s.pending || 0) + '</b><span>Pending</span></div>' +
+				'<div class="s"><b>' + (s.loaded_today || 0) + '</b><span>Loaded today</span></div>' +
+				'<div class="s"><b>' + (s.coils_today || 0) + '</b><span>Coils today</span></div>';
+			$("list-pending").innerHTML = (data.pending && data.pending.length)
+				? data.pending.map((t) => tcard(t, false)).join("") : '<div class="empty">Nothing to load 🎉</div>';
+			$("list-loaded").innerHTML = (data.loaded && data.loaded.length)
+				? data.loaded.map((t) => tcard(t, true)).join("") : '<div class="empty">Nothing loaded yet today</div>';
+			document.querySelectorAll("#screen-home .tcard").forEach((el) => el.onclick = () => {
+				if (el.getAttribute("data-done") === "1") openLoadedSummary(el.dataset.plan);
+				else selectPlan(el.dataset.plan);
+			});
+		}
+
+		async function openLoadedSummary(name) {
+			let p = null;
+			try { p = await api("sbx_wmslite.api.get_plan", { plan: name }); }
+			catch (e) { p = await idbGet("plans", name); }
+			if (!p) { banner("Summary not available offline", "fail"); return; }
+			const loaded = p.coils.filter((c) => c.coil_status === "Loaded");
+			const skipped = p.coils.filter((c) => c.coil_status === "Skipped");
+			const row = (c) => '<div class="coil' + (c.coil_status === "Loaded" ? " loaded" : c.coil_status === "Skipped" ? " skipped" : "") + '">' +
+				'<div style="flex:1;"><div class="code">' + esc(c.coil_barcode) + (c.unplanned ? ' <span class="muted">(unplanned)</span>' : '') + '</div>' +
+				'<div class="meta">' + esc(c.material_grade || "") + (c.loaded_by ? ' · ' + esc(c.loaded_by) : '') + (c.skip_reason ? ' · ' + esc(c.skip_reason) : '') + '</div></div></div>';
+			$("screen-summary").innerHTML =
+				'<div class="sb-card" style="padding:16px;"><div class="sb-label">Loaded truck</div>' +
+				'<h2 class="sb-h1" style="margin:.1em 0;">' + esc(p.truck_number) + '</h2>' +
+				'<p class="muted">' + esc(p.plan_status) + ' · ' + p.loaded_coils + '/' + p.total_coils + ' loaded' +
+				(p.skipped_coils ? ' · ' + p.skipped_coils + ' skipped' : '') +
+				(p.gi_status && p.gi_status !== "Not Required" ? ' · GI ' + esc(p.gi_status) + (p.gi_sap_document ? ' (' + esc(p.gi_sap_document) + ')' : '') : '') + '</p></div>' +
+				(loaded.length ? '<div class="sb-label" style="margin:14px 2px 6px;">Loaded</div>' + loaded.map(row).join("") : '') +
+				(skipped.length ? '<div class="sb-label" style="margin:14px 2px 6px;">Skipped</div>' + skipped.map(row).join("") : '') +
+				'<button class="sb-btn sb-btn--ghost" style="width:100%;margin-top:14px;" onclick="goHome()">← Back to Home</button>';
+			showScreen("summary");
+		}
+
+		// ---------- screens / sheet ----------
+		function showScreen(which) {
+			$("screen-home").classList.toggle("hide", which !== "home");
+			$("screen-coils").classList.toggle("hide", which !== "coils");
+			$("screen-summary").classList.toggle("hide", which !== "summary");
+			$("bottombar").classList.toggle("hide", which !== "coils");
+		}
+		function openSheet(html) { $("sheet").innerHTML = html; $("scrim").classList.add("show"); }
+		function closeSheet() { $("scrim").classList.remove("show"); $("sheet").innerHTML = ""; }
+		$("scrim").addEventListener("click", (e) => { if (e.target === $("scrim")) closeSheet(); });
+
+		// ---------- wiring ----------
+		// Submit via form (mobile soft-keyboard Go/Done + hardware-scanner Enter + desktop Enter)
+		$("truck-form").addEventListener("submit", (e) => { e.preventDefault(); findTrucks($("truck-input").value.trim()); });
+		$("coil-form").addEventListener("submit", (e) => { e.preventDefault(); handleCoilScan($("coil-input").value); });
+		$("bin-form").addEventListener("submit", (e) => { e.preventDefault(); handleBinScan($("bin-input").value); });
+		// keydown fallback (some scanners emit Enter without a form submit)
+		$("truck-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); findTrucks($("truck-input").value.trim()); } });
+		$("coil-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); handleCoilScan($("coil-input").value); } });
+		$("bin-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); handleBinScan($("bin-input").value); } });
+		$("btn-back").onclick = goHome;
+		$("btn-complete").onclick = onComplete;
+		$("home-refresh").onclick = loadHome;
+
+		// ---------- boot ----------
+		(async function boot() {
+			setNet();
+			await openDB();
+			await refreshQueueBadge();
+			try { CFG = await api("sbx_wmslite.api.get_client_config"); await idbPut("kv", { k: "cfg", v: CFG }); }
+			catch (e) { const c = await idbGet("kv", "cfg"); if (c) CFG = c.v; }
+			showScreen("home");
+			loadHome();
+			$("truck-input").focus();
+			syncQueue();
+			if ("serviceWorker" in navigator) navigator.serviceWorker.register("/wms-loading-sw.js", { scope: "/wms-loading" }).catch(() => {});
+		})();
+	</script>
+</body>
+</html>
