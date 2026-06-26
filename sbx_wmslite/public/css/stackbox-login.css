@@ -63,7 +63,7 @@
 
 /* Hero heading — only on the main login screen */
 .for-login .page-card-head::after {
-	content: "Welcome to SBX WMSLite";
+	content: "Welcome to WMS Core";
 	display: block;
 	max-width: 320px;
 	margin: 0 auto;

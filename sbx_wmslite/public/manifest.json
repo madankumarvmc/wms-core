@@ -1,6 +1,6 @@
 {
-  "name": "SBX WMSLite",
-  "short_name": "WMSLite",
+  "name": "SBX WMSCore",
+  "short_name": "SBX WMSCore",
   "description": "Truck loading for steel coil dispatch",
   "start_url": "/wms-loading",
   "scope": "/wms-loading",
