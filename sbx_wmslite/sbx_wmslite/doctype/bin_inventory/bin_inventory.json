@@ -11,13 +11,18 @@
   "coil_barcode",
   "bin_code",
   "status",
+  "qc",
   "column_break_1",
   "material_grade",
   "weight",
+  "plant",
+  "product",
+  "sized",
   "zone",
   "aisle",
   "section_meta",
   "source",
+  "scanned_at",
   "updated_at"
  ],
  "fields": [
@@ -48,6 +53,14 @@
    "options": "Available\nPicked\nBlocked"
   },
   {
+   "default": "0",
+   "description": "Quality-check hold flag from the source feed (informational; does not block picking).",
+   "fieldname": "qc",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "QC Hold"
+  },
+  {
    "fieldname": "column_break_1",
    "fieldtype": "Column Break"
   },
@@ -62,6 +75,21 @@
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Weight (kg)"
+  },
+  {
+   "fieldname": "plant",
+   "fieldtype": "Data",
+   "label": "Plant"
+  },
+  {
+   "fieldname": "product",
+   "fieldtype": "Data",
+   "label": "Product"
+  },
+  {
+   "fieldname": "sized",
+   "fieldtype": "Data",
+   "label": "Size"
   },
   {
    "description": "Optional — used to order the picker's walk path.",
@@ -84,6 +112,13 @@
    "fieldtype": "Select",
    "label": "Source",
    "options": "Push API\nUpload\nIn-app",
+   "read_only": 1
+  },
+  {
+   "description": "Scan timestamp from the source feed. The latest scan wins — an older scan never overwrites a newer one.",
+   "fieldname": "scanned_at",
+   "fieldtype": "Datetime",
+   "label": "Scanned At",
    "read_only": 1
   },
   {

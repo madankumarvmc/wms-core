@@ -9,6 +9,7 @@
   "coil_barcode",
   "coil_qr_raw",
   "material_grade",
+  "item_description",
   "weight",
   "bin_code",
   "zone",
@@ -43,6 +44,12 @@
    "in_list_view": 1,
    "label": "Material / Grade",
    "columns": 2
+  },
+  {
+   "description": "SAP items/itemDescription.",
+   "fieldname": "item_description",
+   "fieldtype": "Data",
+   "label": "Item Description"
   },
   {
    "fieldname": "weight",

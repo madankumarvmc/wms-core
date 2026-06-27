@@ -16,6 +16,15 @@
   "received_at",
   "completed_at",
   "import_batch",
+  "section_sap",
+  "source_plant",
+  "delivery_date",
+  "transport_description",
+  "column_break_sap",
+  "planning_date",
+  "planning_time",
+  "resend",
+  "sap_conflict_note",
   "section_claim",
   "claimed_by",
   "claimed_at",
@@ -92,6 +101,62 @@
    "fieldname": "import_batch",
    "fieldtype": "Data",
    "label": "Import Batch",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_sap",
+   "fieldtype": "Section Break",
+   "label": "SAP Shipment Details"
+  },
+  {
+   "description": "SAP sourcePlantCode.",
+   "fieldname": "source_plant",
+   "fieldtype": "Data",
+   "label": "Source Plant",
+   "read_only": 1
+  },
+  {
+   "fieldname": "delivery_date",
+   "fieldtype": "Date",
+   "label": "Delivery Date",
+   "read_only": 1
+  },
+  {
+   "description": "SAP transportDescription (e.g. Lorry).",
+   "fieldname": "transport_description",
+   "fieldtype": "Data",
+   "label": "Transport",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_sap",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "planning_date",
+   "fieldtype": "Date",
+   "label": "Planning Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "planning_time",
+   "fieldtype": "Data",
+   "label": "Planning Time",
+   "read_only": 1
+  },
+  {
+   "description": "Last SAP resend flag received (\"X\" = re-send).",
+   "fieldname": "resend",
+   "fieldtype": "Data",
+   "label": "Last Resend Flag",
+   "read_only": 1
+  },
+  {
+   "description": "Set when a SAP re-send tried to change or drop an already-loaded coil. Those coils were protected (left as loaded) — reconcile physically.",
+   "fieldname": "sap_conflict_note",
+   "fieldtype": "Small Text",
+   "label": "SAP Re-sync Conflicts",
    "read_only": 1
   },
   {

@@ -34,6 +34,11 @@ scheduler_events = {
 	"cron": {
 		"*/3 * * * *": [
 			"sbx_wmslite.outbound_sap.retry_sweep",
-		]
+		],
+		"*/5 * * * *": [
+			# Safety net: derive Bin Inventory from any Coil Transactions the
+			# post-intake job missed (immediate derivation runs on each push).
+			"sbx_wmslite.bin_api.process_pending_transactions",
+		],
 	}
 }

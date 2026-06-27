@@ -1,0 +1,193 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "autoname": "CTXN-.######",
+ "creation": "2026-06-27 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "coil_barcode",
+  "bin_code",
+  "scanned_at",
+  "processed",
+  "column_break_1",
+  "weight",
+  "material_grade",
+  "product",
+  "sized",
+  "plant",
+  "qc",
+  "section_src",
+  "transaction_type",
+  "username",
+  "source",
+  "txn_key",
+  "column_break_2",
+  "processed_at",
+  "bin_inventory",
+  "section_raw",
+  "raw_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "coil_barcode",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Coil Barcode",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "bin_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Bin / Location"
+  },
+  {
+   "fieldname": "scanned_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Scanned At",
+   "search_index": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "processed",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Processed",
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight (kg)"
+  },
+  {
+   "fieldname": "material_grade",
+   "fieldtype": "Data",
+   "label": "Material / Grade"
+  },
+  {
+   "fieldname": "product",
+   "fieldtype": "Data",
+   "label": "Product"
+  },
+  {
+   "fieldname": "sized",
+   "fieldtype": "Data",
+   "label": "Size"
+  },
+  {
+   "fieldname": "plant",
+   "fieldtype": "Data",
+   "label": "Plant"
+  },
+  {
+   "default": "0",
+   "fieldname": "qc",
+   "fieldtype": "Check",
+   "label": "QC Hold"
+  },
+  {
+   "fieldname": "section_src",
+   "fieldtype": "Section Break",
+   "label": "Source"
+  },
+  {
+   "fieldname": "transaction_type",
+   "fieldtype": "Data",
+   "label": "Transaction Type"
+  },
+  {
+   "fieldname": "username",
+   "fieldtype": "Data",
+   "label": "Source Username"
+  },
+  {
+   "default": "Push API",
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "Push API\nUpload\nIn-app",
+   "read_only": 1
+  },
+  {
+   "description": "Idempotency key (coil + entry date + entry time). Re-pushing the same scan is ignored.",
+   "fieldname": "txn_key",
+   "fieldtype": "Data",
+   "label": "Txn Key",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "processed_at",
+   "fieldtype": "Datetime",
+   "label": "Processed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bin_inventory",
+   "fieldtype": "Link",
+   "label": "Bin Inventory Row",
+   "options": "Bin Inventory",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_raw",
+   "fieldtype": "Section Break",
+   "label": "Raw Payload"
+  },
+  {
+   "fieldname": "raw_json",
+   "fieldtype": "Code",
+   "label": "Raw JSON",
+   "options": "JSON",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-06-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "SBX WMSLite",
+ "name": "Coil Transaction",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Loading Supervisor"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

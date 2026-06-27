@@ -32,6 +32,37 @@ from frappe.utils import cint, now_datetime
 
 CLOSED_STATES = ("Completed", "Completed (Short)", "Cancelled")
 
+# Plan-level fields SAP supplies alongside the coils (mapped by the middleware).
+_SAP_PLAN_FIELDS = ("source_plant", "delivery_date", "transport_description",
+					"planning_date", "planning_time")
+
+
+def _is_resend(data):
+	"""SAP resend flag — 'X' (case-insensitive) means a re-transmission/correction."""
+	return str(data.get("resend") or "").strip().upper() == "X"
+
+
+def _to_float(x):
+	try:
+		return float(x)
+	except (TypeError, ValueError):
+		return None
+
+
+def _log_action(action):
+	"""Map a request action to a valid WMSLite SAP Log action (avoids 'Upsert')."""
+	return "Cancel" if (action or "").lower() == "cancel" else "Update"
+
+
+def _apply_sap_fields(doc, data):
+	"""Copy the optional SAP header fields onto the plan (only when present)."""
+	for f in _SAP_PLAN_FIELDS:
+		if f in data:
+			v = data.get(f)
+			setattr(doc, f, v if v not in ("", None) else None)
+	if "resend" in data:
+		doc.resend = (str(data.get("resend")).strip() or None)
+
 
 def _client_ip():
 	try:
@@ -120,7 +151,7 @@ def receive_loading_plan():
 	coils = data.get("coils") or []
 
 	if not sap_plan_id and not truck:
-		_log(action.title(), "Rejected", "Missing sap_plan_id and truck_number", payload=data)
+		_log(_log_action(action), "Rejected", "Missing sap_plan_id and truck_number", payload=data)
 		frappe.local.response["http_status_code"] = 422
 		return {"ok": False, "error": "sap_plan_id or truck_number required"}
 
@@ -141,7 +172,7 @@ def receive_loading_plan():
 		return _upsert(existing_name, truck, sap_plan_id, coils, data)
 	except Exception as e:
 		frappe.db.rollback()
-		_log(action.title(), "Error", f"{type(e).__name__}: {e}", truck=truck,
+		_log(_log_action(action), "Error", f"{type(e).__name__}: {e}", truck=truck,
 			 sap_plan_id=sap_plan_id, coil_count=len(coils), payload=data)
 		frappe.log_error(frappe.get_traceback(), "WMSLite SAP receive failed")
 		frappe.local.response["http_status_code"] = 500
@@ -175,6 +206,14 @@ def _cancel(existing_name, truck, sap_plan_id, data):
 
 
 def _upsert(existing_name, truck, sap_plan_id, coils, data):
+	# Duplicate guard: a re-send of an EXISTING shipment must carry resend="X".
+	# Without it we treat the payload as a duplicate transmission and change nothing.
+	if existing_name and not _is_resend(data):
+		_log("Update", "Rejected", "Duplicate shipment (no resend flag)", truck=truck,
+			 sap_plan_id=sap_plan_id, plan=existing_name, payload=data)
+		return {"ok": False, "duplicate": True, "error": "Duplicate shipment",
+				"plan": existing_name}
+
 	incoming = {}
 	for c in coils:
 		code = (c.get("coil_barcode") or "").strip()
@@ -204,11 +243,12 @@ def _upsert(existing_name, truck, sap_plan_id, coils, data):
 
 	if truck:
 		doc.truck_number = truck
+	_apply_sap_fields(doc, data)
 
 	# --- authoritative reconcile ---
 	allow_remove = cint(frappe.get_cached_doc("WMSLite Settings").allow_plan_remove_on_resync)
 	existing_by_code = {c.coil_barcode: c for c in doc.coils}
-	removed, added, protected = [], [], []
+	removed, added, protected, loaded_changed = [], [], [], []
 
 	# Remove still-Pending coils absent from the payload (Loaded are protected).
 	if action_label == "Update":
@@ -225,24 +265,48 @@ def _upsert(existing_name, truck, sap_plan_id, coils, data):
 		doc.coils = keep
 		existing_by_code = {c.coil_barcode: c for c in doc.coils}
 
-	# Add / update incoming coils (never touch a Loaded row's status).
+	# Add / update incoming coils. A Loaded row is never modified: if SAP sends
+	# changed attributes for it, we protect it and record the conflict.
 	for code, c in incoming.items():
 		row = existing_by_code.get(code)
 		if row:
 			if row.coil_status != "Loaded":
 				row.material_grade = c.get("material_grade")
+				row.item_description = c.get("item_description")
 				row.weight = c.get("weight")
 				row.coil_qr_raw = c.get("coil_qr_raw")
+			else:
+				ch = []
+				nw = _to_float(c.get("weight"))
+				if nw is not None and nw != _to_float(row.weight):
+					ch.append(f"weight {row.weight}→{c.get('weight')}")
+				ng = c.get("material_grade")
+				if ng not in (None, "") and ng != (row.material_grade or ""):
+					ch.append(f"grade {row.material_grade or ''}→{ng}")
+				if ch:
+					loaded_changed.append(f"{code} ({', '.join(ch)})")
 		else:
 			doc.append("coils", {
 				"coil_barcode": code,
 				"coil_qr_raw": c.get("coil_qr_raw"),
 				"material_grade": c.get("material_grade"),
+				"item_description": c.get("item_description"),
 				"weight": c.get("weight"),
 				"coil_status": "Pending",
 			})
 			added.append(code)
 
+	# Human-readable conflicts: already-loaded coils SAP tried to drop or change.
+	# These are kept (protected) and reported so the change isn't silently lost.
+	conflict_msgs = [f"{code} (Coil Already Loaded)" for code in protected]
+	conflict_msgs += [f"{e} (Coil Already Loaded, change ignored)" for e in loaded_changed]
+	doc.sap_conflict_note = "\n".join(conflict_msgs) if conflict_msgs else None
+
+	# Every Link on the plan (load_event, loaded_by, claimed_by, gi_confirmation) is
+	# set by our own code, never by the SAP payload — re-validating them on a
+	# machine-to-machine re-sync only adds fragility (a deleted audit event would
+	# otherwise block a legitimate re-sync). Skip link validation here.
+	doc.flags.ignore_links = True
 	doc.save(ignore_permissions=True)
 
 	if removed:
@@ -255,9 +319,20 @@ def _upsert(existing_name, truck, sap_plan_id, coils, data):
 
 	frappe.db.commit()
 
+	warnings.extend(conflict_msgs)
+
+	# Human-readable one-line outcome (e.g. "1 added, PM-J1909A522 (Coil Already Loaded)").
+	parts = []
+	if added:
+		parts.append(f"{len(added)} added")
+	if removed:
+		parts.append(f"{len(removed)} removed")
+	parts.extend(conflict_msgs)
+	summary = "; ".join(parts) if parts else "No changes"
+
 	msg = f"{action_label}: +{len(added)} added, -{len(removed)} removed"
-	if protected:
-		msg += f", {len(protected)} protected"
+	if conflict_msgs:
+		msg += f", {len(conflict_msgs)} already-loaded protected"
 	if warnings:
 		msg += " | " + "; ".join(warnings)
 	_log(action_label, "Accepted", msg, truck=doc.truck_number, sap_plan_id=sap_plan_id,
@@ -268,8 +343,10 @@ def _upsert(existing_name, truck, sap_plan_id, coils, data):
 		"plan": doc.name,
 		"status": doc.plan_status,
 		"total_coils": doc.total_coils,
+		"summary": summary,
 		"added": added,
 		"removed": removed,
 		"protected": protected,
+		"loaded_changed": loaded_changed,
 		"warnings": warnings,
 	}
