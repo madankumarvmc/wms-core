@@ -1,0 +1,185 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-07-01 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "loading_plan",
+  "truck_number",
+  "sap_plan_id",
+  "coil_barcode",
+  "coil",
+  "column_break_1",
+  "status",
+  "weight",
+  "material_grade",
+  "section_delivery",
+  "attempts",
+  "last_pushed_at",
+  "column_break_2",
+  "sap_message",
+  "last_error",
+  "section_payload",
+  "request_payload",
+  "response_excerpt"
+ ],
+ "fields": [
+  {
+   "fieldname": "loading_plan",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Loading Plan",
+   "options": "Loading Plan",
+   "reqd": 1
+  },
+  {
+   "fieldname": "truck_number",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Truck Number"
+  },
+  {
+   "fieldname": "sap_plan_id",
+   "fieldtype": "Data",
+   "label": "SAP Plan ID"
+  },
+  {
+   "fieldname": "coil_barcode",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Coil Barcode"
+  },
+  {
+   "description": "The Loading Plan Coil row this push tracks. Unique — one push record per coil.",
+   "fieldname": "coil",
+   "fieldtype": "Data",
+   "label": "Coil Row",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Pending",
+   "description": "Pending = queued, not yet sent. Sent = accepted by SAP. Failed = SAP rejected (see message) — use Reset & Retry after fixing. Not Required = coil was un-loaded before send.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Disabled\nDeferred\nPending\nSending\nSent\nFailed\nNot Required"
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight (kg)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "material_grade",
+   "fieldtype": "Data",
+   "label": "Material / Grade",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_delivery",
+   "fieldtype": "Section Break",
+   "label": "Delivery"
+  },
+  {
+   "default": "0",
+   "fieldname": "attempts",
+   "fieldtype": "Int",
+   "label": "Attempts",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_pushed_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Last Pushed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "sap_message",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "SAP Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Small Text",
+   "label": "Last Error",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_payload",
+   "fieldtype": "Section Break",
+   "label": "Payload / Response"
+  },
+  {
+   "description": "The exact T1 transaction sent to SAP (snapshot of the last attempt).",
+   "fieldname": "request_payload",
+   "fieldtype": "Code",
+   "label": "Request Payload",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "response_excerpt",
+   "fieldtype": "Small Text",
+   "label": "Last Response",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-07-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "SBX WMSLite",
+ "name": "WMSLite SAP Loading",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Loading Supervisor",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

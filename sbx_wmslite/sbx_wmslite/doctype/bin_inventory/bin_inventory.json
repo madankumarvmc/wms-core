@@ -163,6 +163,11 @@
   {
    "read": 1,
    "role": "Loading Operator"
+  },
+  {
+   "read": 1,
+   "role": "Inventory Recorder",
+   "write": 1
   }
  ],
  "row_format": "Dynamic",

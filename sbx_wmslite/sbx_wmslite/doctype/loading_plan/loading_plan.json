@@ -70,7 +70,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Status",
-   "options": "Open\nIn Progress\nPending Approval\nCompleted\nCompleted (Short)\nCancelled",
+   "options": "Open\nIn Progress\nReady to Complete\nPending Approval\nCompleted\nCompleted (Short)\nCancelled",
    "read_only": 1
   },
   {

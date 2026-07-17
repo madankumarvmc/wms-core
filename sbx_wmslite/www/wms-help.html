@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>WMS Core — User Manual</title>
+	<link rel="stylesheet" href="/assets/sbx_wmslite/css/stackbox.css" />
+	<style>
+		* { box-sizing: border-box; }
+		body { margin: 0; background: var(--sb-bg); color: var(--sb-ink);
+			font-family: var(--sb-font-body, 'Inter', sans-serif); line-height: 1.6; }
+		a { color: var(--sb-orange); }
+		.topbar { position: sticky; top: 0; z-index: 30; background: var(--sb-card);
+			border-bottom: 1px solid var(--sb-line); padding: 12px 20px; display: flex; align-items: center; gap: 12px; }
+		.topbar img { height: 24px; }
+		.topbar .t { font-family: var(--sb-font-display, 'Oswald'); text-transform: uppercase;
+			letter-spacing: .04em; font-weight: 700; font-size: 17px; }
+		.topbar .tag { font-size: 12px; color: var(--sb-muted); }
+		.layout { display: grid; grid-template-columns: 260px 1fr; max-width: 1180px; margin: 0 auto; align-items: start; }
+		.toc { position: sticky; top: 57px; align-self: start; max-height: calc(100vh - 57px); overflow: auto;
+			padding: 22px 14px; font-size: 13.5px; }
+		.toc .grp { text-transform: uppercase; letter-spacing: .04em; font-size: 11px; color: var(--sb-muted);
+			margin: 16px 0 6px; font-weight: 700; }
+		.toc a { display: block; color: var(--sb-ink); text-decoration: none; padding: 4px 8px; border-radius: 6px; }
+		.toc a:hover { background: var(--sb-card); color: var(--sb-orange); }
+		main { padding: 26px 34px 80px; min-width: 0; }
+		h1.title { font-family: var(--sb-font-display, 'Oswald'); font-size: 34px; margin: .2em 0 .1em; }
+		h2 { font-family: var(--sb-font-display, 'Oswald'); font-size: 24px; margin: 40px 0 10px;
+			padding-top: 10px; border-top: 2px solid var(--sb-line); }
+		h3 { font-size: 17px; margin: 24px 0 6px; }
+		p, li { font-size: 15px; }
+		ul, ol { padding-left: 22px; }
+		.lead { font-size: 16px; color: var(--sb-muted); max-width: 62ch; }
+		.callout { background: var(--sb-blue-bg, #e9f1fb); border-left: 4px solid var(--sb-blue, #2f6db5);
+			padding: 11px 15px; border-radius: 8px; margin: 14px 0; font-size: 14.5px; }
+		.callout.warn { background: var(--sb-amber-bg, #fdf2e0); border-left-color: var(--sb-amber, #b9770e); }
+		.callout.ok { background: var(--sb-green-bg, #e7f6ee); border-left-color: var(--sb-green, #1f9d57); }
+		.tag-pill { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 99px;
+			background: var(--sb-card); border: 1px solid var(--sb-line); vertical-align: middle; }
+		figure { margin: 16px 0; }
+		figure.phone img { width: 100%; max-width: 300px; border: 1px solid var(--sb-line);
+			border-radius: 18px; box-shadow: 0 6px 20px rgba(0,0,0,.10); }
+		figure.wide img { width: 100%; max-width: 900px; border: 1px solid var(--sb-line);
+			border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,.08); }
+		figcaption { font-size: 12.5px; color: var(--sb-muted); margin-top: 7px; }
+		.gallery { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+		.gallery figure { flex: 0 1 300px; margin: 6px 0; }
+		table.kv { border-collapse: collapse; width: 100%; max-width: 760px; margin: 12px 0; background: var(--sb-card);
+			border: 1px solid var(--sb-line); border-radius: 8px; overflow: hidden; }
+		table.kv th, table.kv td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--sb-line); font-size: 14px; vertical-align: top; }
+		table.kv th { background: var(--sb-bg); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--sb-muted); }
+		table.kv tr:last-child td { border-bottom: none; }
+		kbd { background: var(--sb-ink); color: #fff; border-radius: 5px; padding: 1px 7px; font-size: 12px; font-weight: 700; }
+		.roles { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+		.role { flex: 1 1 220px; background: var(--sb-card); border: 1px solid var(--sb-line); border-radius: 10px; padding: 14px 16px; }
+		.role b { font-family: var(--sb-font-display, 'Oswald'); text-transform: uppercase; letter-spacing: .03em; }
+		@media (max-width: 820px) {
+			.layout { grid-template-columns: 1fr; }
+			.toc { position: static; max-height: none; border-bottom: 1px solid var(--sb-line); }
+			main { padding: 20px; }
+		}
+	</style>
+</head>
+<body class="sb-body">
+	<div class="topbar">
+		<img src="/assets/sbx_wmslite/brand/stackbox-logo.svg" alt="StackBox" />
+		<span class="t">WMS Core</span>
+		<span class="tag">User Manual</span>
+	</div>
+
+	<div class="layout">
+		<nav class="toc">
+			<div class="grp">Start here</div>
+			<a href="#overview">1 · Overview</a>
+			<a href="#start">2 · Getting started</a>
+			<div class="grp">Handheld app</div>
+			<a href="#loading">3 · Loading a truck</a>
+			<a href="#loading-find">3.1 Find &amp; claim</a>
+			<a href="#loading-scan">3.2 Scan &amp; confirm</a>
+			<a href="#loading-undo">3.3 Undo &amp; over-scan</a>
+			<a href="#loading-complete">3.4 Complete</a>
+			<a href="#loading-short">3.5 Short-load</a>
+			<a href="#loading-offline">3.6 Offline</a>
+			<a href="#count">4 · Inventory Count</a>
+			<div class="grp">Supervisor console</div>
+			<a href="#console">5 · Console</a>
+			<a href="#console-dash">5.1 Dashboard</a>
+			<a href="#console-trucks">5.2 Trucks</a>
+			<a href="#console-inv">5.3 Inventory</a>
+			<a href="#console-sap">5.4 SAP views</a>
+			<a href="#console-import">5.5 Import</a>
+			<div class="grp">Reference</div>
+			<a href="#faq">6 · Troubleshooting</a>
+			<a href="#glossary">7 · Glossary</a>
+		</nav>
+
+		<main>
+			<h1 class="title">WMS Core — User Manual</h1>
+			<p class="lead">WMS Core is the handheld (phone/scanner) app and supervisor console for
+			truck loading and bin inventory. This guide covers the two handheld tasks —
+			<b>Loading</b> and <b>Inventory Count</b> — and the <b>Supervisor Console</b>.</p>
+
+			<!-- ============ 1 OVERVIEW ============ -->
+			<h2 id="overview">1 · Overview</h2>
+			<p>There are two places you'll work:</p>
+			<div class="roles">
+				<div class="role"><b>🚚 Handheld app</b><p style="margin:.4em 0 0;font-size:14px;">Opens at <code>/wms-loading</code> on a
+					phone or scanner (HHT). Operators load trucks and count inventory. Works offline.</p></div>
+				<div class="role"><b>🖥️ Supervisor console</b><p style="margin:.4em 0 0;font-size:14px;">Opens at <code>/wms-console</code> on a
+					desktop. Supervisors track trucks, review SAP sync, and import data.</p></div>
+			</div>
+			<p>The handheld has two <b>tasks</b>, controlled by your role:</p>
+			<table class="kv">
+				<tr><th>Your role</th><th>What you see</th></tr>
+				<tr><td>Loading Operator</td><td>Loading only</td></tr>
+				<tr><td>Inventory Recorder</td><td>Inventory Count only</td></tr>
+				<tr><td>Loading Supervisor / both roles</td><td>A task picker to choose either</td></tr>
+			</table>
+
+			<!-- ============ 2 GETTING STARTED ============ -->
+			<h2 id="start">2 · Getting started</h2>
+			<h3>Opening &amp; installing the app</h3>
+			<ol>
+				<li>Open <code>/wms-loading</code> in the phone browser and log in with your WMS Core account.</li>
+				<li>Use your browser's <b>Add to Home Screen</b> so it launches like a native app (full screen, offline-ready).</li>
+			</ol>
+			<h3>The top bar</h3>
+			<p>Every screen shows a status bar:</p>
+			<ul>
+				<li><span class="tag-pill" style="background:#e7f6ee;color:#1f9d57;">ONLINE</span> / <span class="tag-pill" style="background:#fdf2e0;color:#b9770e;">OFFLINE</span> — your connection. The app keeps working offline.</li>
+				<li><span class="tag-pill" style="background:#e9f1fb;color:#2f6db5;">N queued</span> — actions saved on the phone waiting to sync (appears only when offline work is pending).</li>
+				<li><span class="tag-pill">⇄ Task</span> — switch between Loading and Inventory Count (only if you have both).</li>
+			</ul>
+			<h3>The task picker</h3>
+			<p>If you can do both tasks, you land on the picker. Tap a tile to start; the app remembers
+			your choice next time (switch anytime with <b>⇄ Task</b>).</p>
+			<figure class="phone"><img src="/assets/sbx_wmslite/manual/01-task-picker.png" alt="Task picker" />
+				<figcaption>The task picker — choose Loading or Inventory Count.</figcaption></figure>
+
+			<!-- ============ 3 LOADING ============ -->
+			<h2 id="loading">3 · Loading a truck</h2>
+			<p>The Loading home shows today's numbers, the trucks still <b>To Load</b> (oldest first),
+			and trucks <b>Loaded Today</b>. Scan or type a truck at the top, or tap one from the list.</p>
+			<figure class="phone"><img src="/assets/sbx_wmslite/manual/02-home.png" alt="Loading home" />
+				<figcaption>Loading home — stats strip, scan box, and the To-Load list.</figcaption></figure>
+
+			<h3 id="loading-find">3.1 Find &amp; claim a truck</h3>
+			<p>Scan the truck barcode (or type it and tap <b>→</b>). Matching open trucks appear — tap one to start loading.</p>
+			<figure class="phone"><img src="/assets/sbx_wmslite/manual/03-truck-results.png" alt="Truck search results" />
+				<figcaption>Search results. Tapping a truck claims it to you.</figcaption></figure>
+			<div class="callout">If a truck is already claimed by another operator, you'll be asked to
+			confirm a <b>takeover</b> before continuing — the change is logged.</div>
+
+			<h3 id="loading-scan">3.2 Scan &amp; confirm coils</h3>
+			<p>The loading screen shows a progress bar and running counts (Loaded / Pending / Skipped / Total),
+			then the coil list. Scan a coil — its card appears; tap <b>Confirm Coil Load</b> to load it.
+			A scanner that sends the code fast is detected automatically; manual typists tap the orange <b>→</b>.</p>
+			<div class="gallery">
+				<figure class="phone"><img src="/assets/sbx_wmslite/manual/04-coil-screen.png" alt="Coil screen" />
+					<figcaption>Loading screen: progress, counts, and the coil list. Loaded coils show an <b>Undo</b>.</figcaption></figure>
+				<figure class="phone"><img src="/assets/sbx_wmslite/manual/05-armed-confirm.png" alt="Armed coil confirm" />
+					<figcaption>After a scan, confirm the coil before it's marked loaded.</figcaption></figure>
+			</div>
+
+			<h3 id="loading-undo">3.3 Undo &amp; over-scan</h3>
+			<p><b>Undo</b> — tap <b>Undo</b> on a loaded coil to send it back to pending (within the undo window) if you scanned it by mistake.</p>
+			<p><b>Over-scan</b> — if you scan a coil that isn't on the truck's plan and over-scan is allowed,
+			you can add and load it; it's recorded as an unplanned coil.</p>
+			<figure class="phone"><img src="/assets/sbx_wmslite/manual/06-overscan-sheet.png" alt="Over-scan prompt" />
+				<figcaption>A coil not on the plan — add &amp; load it (logged as unplanned).</figcaption></figure>
+
+			<h3 id="loading-complete">3.4 Complete the truck</h3>
+			<p>When every coil is loaded, tap <b>Complete Loading</b>. This finalises the truck and triggers
+			the SAP goods-issue. Completing needs a connection.</p>
+			<div class="callout ok">Completed trucks appear under <b>Loaded Today</b> on the home screen.
+			Tap one to see a read-only summary of what was loaded.</div>
+			<figure class="phone"><img src="/assets/sbx_wmslite/manual/10-loaded-summary.png" alt="Loaded truck summary" />
+				<figcaption>Read-only summary of a completed truck.</figcaption></figure>
+
+			<h3 id="loading-short">3.5 Short-load (finishing with coils left)</h3>
+			<p>If you must finish before every coil is loaded, tap <b>Complete Loading</b> — you'll be asked
+			for a <b>reason</b> for each remaining coil, then a supervisor enters their <b>PIN</b> to approve.
+			Approval is online only.</p>
+			<div class="gallery">
+				<figure class="phone"><img src="/assets/sbx_wmslite/manual/08-short-load.png" alt="Short-load reasons" />
+					<figcaption>Pick a reason for each unloaded coil.</figcaption></figure>
+				<figure class="phone"><img src="/assets/sbx_wmslite/manual/09-supervisor-pin.png" alt="Supervisor PIN" />
+					<figcaption>A supervisor approves with their PIN (or declines).</figcaption></figure>
+			</div>
+
+			<h3 id="loading-offline">3.6 Working offline</h3>
+			<p>Scanning and confirming keep working with no signal. Each action is saved on the phone (the
+			<b>N queued</b> badge shows how many) and syncs automatically when you're back online. You never lose work.</p>
+			<figure class="phone"><img src="/assets/sbx_wmslite/manual/07-offline.png" alt="Offline mode" />
+				<figcaption>Offline — actions queue on the device and sync on reconnect.</figcaption></figure>
+			<div class="callout warn">Completing a truck and short-load approvals need a connection —
+			reconnect before finishing.</div>
+
+			<!-- ============ 4 INVENTORY COUNT ============ -->
+			<h2 id="count">4 · Inventory Count</h2>
+			<p>Inventory Count maps <b>which coil is in which bin</b>. You walk to a bin, scan its location
+			barcode, then scan each coil in it. Every scan is saved immediately — there's no separate "save each coil" step.</p>
+			<h3>Scan a bin</h3>
+			<p>Scan (or type) the bin's location barcode to open it.</p>
+			<figure class="phone"><img src="/assets/sbx_wmslite/manual/11-count-bin.png" alt="Scan a bin" />
+				<figcaption>Start a count by scanning a bin.</figcaption></figure>
+			<h3>Scan the coils</h3>
+			<p>Scan each coil in the bin. Each one appears at the top of the list and the running count updates.
+			The app tells you if a coil <b>moved</b> from another bin or was <b>already here</b>.</p>
+			<ul>
+				<li><b>QC pill</b> — every coil defaults to <span class="tag-pill">OK</span>. Tap it to mark a
+				<span class="tag-pill" style="background:#fdf2e0;color:#b9770e;">QC</span> hold; tap again to clear.</li>
+				<li><b>✕</b> — removes a coil you scanned by mistake.</li>
+				<li><b>Save &amp; next bin</b> — finish this bin and go straight to scanning the next one.</li>
+			</ul>
+			<div class="gallery">
+				<figure class="phone"><img src="/assets/sbx_wmslite/manual/12-count-capture.png" alt="Counting coils in a bin" />
+					<figcaption>Scan-and-go: coils list as you scan, with a running count.</figcaption></figure>
+				<figure class="phone"><img src="/assets/sbx_wmslite/manual/13-count-qc.png" alt="QC hold on a coil" />
+					<figcaption>Tap the pill to put a coil on QC hold.</figcaption></figure>
+			</div>
+			<div class="callout">Inventory Count works offline too — scans queue and sync just like loading.
+			Reopening a bin shows the coils already recorded in it.</div>
+
+			<!-- ============ 5 CONSOLE ============ -->
+			<h2 id="console">5 · Supervisor Console</h2>
+			<p>The console (<code>/wms-console</code>, desktop) is for Loading Supervisors. The left menu
+			switches between views.</p>
+
+			<h3 id="console-dash">5.1 Dashboard</h3>
+			<p>Live counts (open/active trucks, awaiting approval, GI status) and throughput over a date range.</p>
+			<figure class="wide"><img src="/assets/sbx_wmslite/manual/20-console-dashboard.png" alt="Console dashboard" />
+				<figcaption>Dashboard — live status and throughput.</figcaption></figure>
+
+			<h3 id="console-trucks">5.2 Trucks</h3>
+			<p>Search and filter every truck/plan. Click a row to open its detail drawer: coils and their status,
+			the full event history, and per-coil SAP T1 status. From here a supervisor can <b>complete</b>,
+			<b>cancel</b>, or <b>reopen</b> a plan and <b>retry</b> a failed SAP push.</p>
+			<figure class="wide"><img src="/assets/sbx_wmslite/manual/21-console-trucks.png" alt="Truck detail drawer" />
+				<figcaption>Truck list with the detail drawer open.</figcaption></figure>
+
+			<h3 id="console-inv">5.3 Inventory</h3>
+			<p>The current coil→bin map (from the push feed, uploads, and in-app Inventory Counts). Search by coil or bin.</p>
+			<figure class="wide"><img src="/assets/sbx_wmslite/manual/22-console-inventory.png" alt="Bin inventory" />
+				<figcaption>Bin Inventory — one row per coil.</figcaption></figure>
+
+			<h3 id="console-sap">5.4 SAP views</h3>
+			<p>Three views track the SAP integration:</p>
+			<ul>
+				<li><b>SAP Confirmations</b> — outbound goods-issue (GI) per truck. Held partial loads can be <b>Released</b>; failures <b>Retried</b>.</li>
+				<li><b>SAP Loading</b> — the per-coil T1 loading push. <span class="tag-pill" style="background:#e7f6ee;color:#1f9d57;">Sent</span> = accepted by SAP, <span class="tag-pill" style="background:#f1f3f5;color:#6b7280;">Failed</span> = rejected (retry after fixing), <span class="tag-pill" style="background:#fdf2e0;color:#b9770e;">Disabled</span> = loaded while push was off (turn it on, then push).</li>
+				<li><b>SAP Log</b> — a timeline of every SAP call in and out, with result and message.</li>
+			</ul>
+			<div class="gallery">
+				<figure class="wide" style="flex-basis:420px;"><img src="/assets/sbx_wmslite/manual/23-console-confirmations.png" alt="SAP confirmations" />
+					<figcaption>SAP Confirmations (goods issue).</figcaption></figure>
+				<figure class="wide" style="flex-basis:420px;"><img src="/assets/sbx_wmslite/manual/24-console-saploading.png" alt="SAP loading" />
+					<figcaption>SAP Loading (per-coil T1).</figcaption></figure>
+				<figure class="wide" style="flex-basis:420px;"><img src="/assets/sbx_wmslite/manual/25-console-saplog.png" alt="SAP log" />
+					<figcaption>SAP Log — full call timeline.</figcaption></figure>
+			</div>
+
+			<h3 id="console-import">5.5 Import (fallback)</h3>
+			<p>If the automatic feed is unavailable, upload a CSV/XLSX to create Loading Plans or Bin Inventory.
+			Download the template, upload your file, map the columns, preview for errors, then commit.</p>
+			<figure class="wide"><img src="/assets/sbx_wmslite/manual/26-console-import.png" alt="Import wizard" />
+				<figcaption>Import wizard — template, upload, map, preview, commit.</figcaption></figure>
+
+			<!-- ============ 6 FAQ ============ -->
+			<h2 id="faq">6 · Troubleshooting</h2>
+			<table class="kv">
+				<tr><th>Problem</th><th>What to do</th></tr>
+				<tr><td>Scanning doesn't open the coil</td><td>Tap the orange <b>→</b> next to the box, or press Enter. On a scanner, check it's sending the barcode into the focused field.</td></tr>
+				<tr><td>"Not on this truck"</td><td>The coil isn't on this plan. Check you're on the right truck; use over-scan only if allowed and correct.</td></tr>
+				<tr><td>"Already loaded"</td><td>That coil is already done — no action needed.</td></tr>
+				<tr><td>Can't complete the truck</td><td>Coils are still pending — either load them, or use the short-load flow with a supervisor PIN.</td></tr>
+				<tr><td>"N queued" won't clear</td><td>You're offline or the connection dropped. Reconnect; the badge clears once everything syncs.</td></tr>
+				<tr><td>Count says "already counted in this bin"</td><td>You scanned the same coil twice — it's counted once, nothing to fix.</td></tr>
+			</table>
+
+			<!-- ============ 7 GLOSSARY ============ -->
+			<h2 id="glossary">7 · Glossary</h2>
+			<table class="kv">
+				<tr><th>Term</th><th>Meaning</th></tr>
+				<tr><td>Coil</td><td>A steel/aluminium coil, identified by its barcode.</td></tr>
+				<tr><td>Bin</td><td>A storage location, identified by a location barcode.</td></tr>
+				<tr><td>Plan</td><td>A truck's loading list (which coils go on it), usually sent from SAP.</td></tr>
+				<tr><td>QC hold</td><td>A quality flag on a coil — informational; it does not block work.</td></tr>
+				<tr><td>Short-load</td><td>Completing a truck with some planned coils left off, with reasons and supervisor approval.</td></tr>
+				<tr><td>Goods issue (GI)</td><td>The SAP confirmation that a truck's goods have shipped.</td></tr>
+				<tr><td>T1</td><td>The per-coil loading transaction sent to SAP when a coil is loaded.</td></tr>
+			</table>
+			<p style="margin-top:40px;color:var(--sb-muted);font-size:13px;">WMS Core by StackBox · handheld app <code>/wms-loading</code> · console <code>/wms-console</code></p>
+		</main>
+	</div>
+</body>
+</html>

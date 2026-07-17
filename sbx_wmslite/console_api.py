@@ -133,10 +133,13 @@ def get_truck_detail(plan):
 			"received_at": str(doc.received_at) if doc.received_at else None,
 		},
 		"coils": [
-			{"coil_barcode": c.coil_barcode, "material_grade": c.material_grade,
+			{"name": c.name, "coil_barcode": c.coil_barcode, "material_grade": c.material_grade,
 			 "weight": c.weight, "coil_status": c.coil_status, "skip_reason": c.skip_reason,
 			 "unplanned": cint(c.unplanned), "loaded_by": c.loaded_by,
-			 "loaded_at": str(c.loaded_at) if c.loaded_at else None}
+			 "loaded_at": str(c.loaded_at) if c.loaded_at else None,
+			 "sap_loading_status": c.sap_loading_status,
+			 "sap_loading_message": c.sap_loading_message,
+			 "sap_loading_pushed_at": str(c.sap_loading_pushed_at) if c.sap_loading_pushed_at else None}
 			for c in doc.coils
 		],
 		"events": events,
@@ -167,6 +170,18 @@ def cancel_plan(plan, reopen=0):
 					"event_time": now_datetime(), "reason": reason}).insert(ignore_permissions=True)
 	frappe.db.commit()
 	return {"ok": True, "plan_status": doc.plan_status}
+
+
+@frappe.whitelist()
+def complete_plan(plan):
+	"""Supervisor completes a fully-loaded plan from the console — for a truck the
+	operator left parked at 'Ready to Complete' (auto-complete off). Reuses the
+	operator endpoint so completion behaviour stays single-sourced (fires the SAP
+	goods-issue and releases the Deferred T1 pushes)."""
+	_require_console()
+	from sbx_wmslite import api as operator_api
+
+	return operator_api.complete_plan(plan)
 
 
 # --------------------------------------------------------------------------
@@ -230,6 +245,56 @@ def get_sap_log(result=None, direction=None, date_from=None, date_to=None, limit
 				"sap_plan_id", "loading_plan", "coil_count", "message", "source_ip"],
 		order_by="received_at desc", limit_page_length=cint(limit),
 	)
+
+
+# --------------------------------------------------------------------------
+# SAP Loading (outbound T1) — per-coil push status
+# --------------------------------------------------------------------------
+_T1_STATES = ("Pending", "Sent", "Failed")
+
+
+@frappe.whitelist()
+def get_coil_loading(status=None, truck=None, date_from=None, date_to=None, limit=200):
+	"""Per-coil T1 loading-push records across all plans. Only coils that are (or
+	should be) pushed to SAP appear — i.e. sap_loading_status in Pending/Sent/Failed."""
+	_require_console()
+	conds = ["c.sap_loading_status IN %(states)s"]
+	params = {"states": (status,) if status in _T1_STATES else _T1_STATES,
+			  "limit": cint(limit)}
+	if truck:
+		conds.append("p.truck_number LIKE %(truck)s")
+		params["truck"] = "%" + truck + "%"
+	if date_from:
+		conds.append("c.sap_loading_pushed_at >= %(df)s")
+		params["df"] = date_from + " 00:00:00"
+	if date_to:
+		conds.append("c.sap_loading_pushed_at <= %(dt)s")
+		params["dt"] = date_to + " 23:59:59"
+	return frappe.db.sql(
+		"""
+		SELECT c.name, c.coil_barcode, c.parent AS plan, p.truck_number, p.sap_plan_id,
+			   c.coil_status, c.weight, c.material_grade,
+			   c.sap_loading_status, c.sap_loading_message, c.sap_loading_pushed_at
+		FROM `tabLoading Plan Coil` c
+		JOIN `tabLoading Plan` p ON p.name = c.parent
+		WHERE {where}
+		ORDER BY c.sap_loading_pushed_at DESC, c.modified DESC
+		LIMIT %(limit)s
+		""".format(where=" AND ".join(conds)),
+		params, as_dict=True,
+	)
+
+
+@frappe.whitelist()
+def retry_coil_loading(coil):
+	"""Re-arm a Failed coil's T1 push and enqueue the sweep."""
+	_require_console()
+	from sbx_wmslite import loading_push
+
+	res = loading_push.requeue(coil)
+	if not res.get("ok"):
+		frappe.throw(_("Cannot retry: {0}").format(res.get("skipped") or "not retryable"))
+	return res
 
 
 # --------------------------------------------------------------------------
@@ -435,6 +500,11 @@ def _run_plan_import(rows, batch):
 				frappe.db.set_value("Loading Plan", r["plan"], "source", "Upload")
 				frappe.db.set_value("Loading Plan", r["plan"], "import_batch", batch)
 				inserted += 1
+			elif r.get("duplicate"):
+				errors += 1
+				errlog.append(
+					f"{truck}: sap_plan_id '{sap_plan_id}' already exists on {r.get('plan')} "
+					f"— use a new sap_plan_id or leave it blank")
 			else:
 				errors += 1
 				errlog.append(f"{truck}: {r.get('error')}")

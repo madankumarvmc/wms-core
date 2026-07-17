@@ -22,7 +22,10 @@
   "loaded_by",
   "loaded_at",
   "unplanned",
-  "load_event"
+  "load_event",
+  "sap_loading_status",
+  "sap_loading_pushed_at",
+  "sap_loading_message"
  ],
  "fields": [
   {
@@ -131,6 +134,27 @@
    "fieldtype": "Link",
    "label": "Last Load Event",
    "options": "Coil Load Event",
+   "read_only": 1
+  },
+  {
+   "default": "Not Required",
+   "description": "SAP loading-transaction push state.",
+   "fieldname": "sap_loading_status",
+   "fieldtype": "Select",
+   "label": "SAP Loading Status",
+   "options": "Not Required\nDisabled\nDeferred\nPending\nSent\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sap_loading_pushed_at",
+   "fieldtype": "Datetime",
+   "label": "SAP Loading Pushed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sap_loading_message",
+   "fieldtype": "Small Text",
+   "label": "SAP Loading Message",
    "read_only": 1
   }
  ],

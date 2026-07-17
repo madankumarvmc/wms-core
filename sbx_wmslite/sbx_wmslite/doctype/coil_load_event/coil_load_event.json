@@ -50,7 +50,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Event Type",
-   "options": "Loaded\nRejected\nUndo\nShort-Load Request\nApproval\nUnplanned Add\nPlan Amend\nClaim\nTakeover\nCancel"
+   "options": "Loaded\nRejected\nUndo\nShort-Load Request\nApproval\nCompletion\nUnplanned Add\nPlan Amend\nClaim\nTakeover\nCancel"
   },
   {
    "fieldname": "result",

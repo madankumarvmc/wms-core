@@ -47,6 +47,9 @@ class TestOutboundSAP(FrappeTestCase):
 		self.tag = TRUCK + "_" + self._testMethodName
 		s = frappe.get_doc("WMSLite Settings")
 		s.gi_enabled = 1
+		# these tests complete a plan by loading its last coil, so auto-complete must
+		# be on (otherwise the plan parks at 'Ready to Complete' and no GI fires)
+		s.auto_complete_on_full_load = 1
 		s.sap_token_url = "https://sap.example/token"
 		s.sap_client_id = "cid"
 		s.sap_client_secret = "secret"

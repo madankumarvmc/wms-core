@@ -26,6 +26,12 @@ test("console dashboard, trucks drawer, sap log and import render", async ({ pag
   await expect(page.locator("#drawer table.grid").first()).toBeVisible();
   await page.click("#scrim2");
 
+  await page.click('.nav-item[data-v="saploading"]');
+  await expect(page.locator("#tl-table table.grid")).toBeVisible();
+  // status filter is present and queryable (table re-renders without error)
+  await page.selectOption("#tl-status", "Failed");
+  await expect(page.locator("#tl-table table.grid")).toBeVisible();
+
   await page.click('.nav-item[data-v="saplog"]');
   await expect(page.locator("#content table.grid")).toBeVisible();
 

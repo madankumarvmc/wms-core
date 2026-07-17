@@ -87,7 +87,7 @@ class TestWMSLite(FrappeTestCase):
 	def test_sap_authoritative_resync_removes_pending(self):
 		plan = self._make_plan()
 		r = sap_api._upsert(plan, self.truck, self.tag,
-			[{"coil_barcode": "UT-A"}, {"coil_barcode": "UT-D"}], {})
+			[{"coil_barcode": "UT-A"}, {"coil_barcode": "UT-D"}], {"resend": "X"})
 		self.assertIn("UT-D", r["added"])
 		self.assertIn("UT-B", r["removed"])
 		self.assertIn("UT-C", r["removed"])
@@ -96,7 +96,7 @@ class TestWMSLite(FrappeTestCase):
 		plan = self._make_plan()
 		api.confirm_load(plan, "UT-B", client_event_id="ut-load-b")
 		# resend WITHOUT UT-B — it is Loaded, so must be protected
-		r = sap_api._upsert(plan, self.truck, self.tag, [{"coil_barcode": "UT-A"}], {})
+		r = sap_api._upsert(plan, self.truck, self.tag, [{"coil_barcode": "UT-A"}], {"resend": "X"})
 		self.assertIn("UT-B", r["protected"])
 		doc = frappe.get_doc("Loading Plan", plan)
 		self.assertTrue(any(c.coil_barcode == "UT-B" and c.coil_status == "Loaded" for c in doc.coils))

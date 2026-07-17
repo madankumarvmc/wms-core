@@ -10,3 +10,9 @@ __pycache__
 tags
 .idea/
 .vscode/
+
+# WMS Core: manual screenshots (captured from the live system — real operational
+# data; kept on the server, not in this public repo) and Playwright artifacts.
+sbx_wmslite/public/manual/
+tests/e2e/playwright-report/
+tests/e2e/test-results/

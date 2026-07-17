@@ -118,13 +118,52 @@
 			background: #fff7f1; border: 1px solid var(--sb-orange); border-radius: var(--sb-radius-sm); padding: 11px 12px; }
 		.bin-context .bx-code { font-family: var(--sb-font-display, 'Oswald'); font-size: 18px; font-weight: 800; line-height: 1.05; }
 		.bin-context .bx-loc { color: var(--sb-muted); font-size: 12px; }
+		/* task picker */
+		.switchbtn { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: var(--sb-pill);
+			background: var(--sb-blue-bg, #e9f1fb); color: var(--sb-blue, #2f6db5); border: none; cursor: pointer;
+			text-transform: uppercase; letter-spacing: .04em; }
+		.helpbtn { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--sb-line);
+			background: var(--sb-card); color: var(--sb-muted); font-weight: 800; font-size: 13px; text-decoration: none;
+			display: inline-flex; align-items: center; justify-content: center; }
+		/* shipment number(s) on the loading header */
+		.ship-line { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+		.ship-chip { font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: var(--sb-pill);
+			background: var(--sb-bg); border: 1px solid var(--sb-line); color: var(--sb-ink); }
+		.ship-chip.more { cursor: pointer; background: var(--sb-blue-bg, #e9f1fb); color: var(--sb-blue, #2f6db5); border-color: transparent; }
+		.ship-line .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--sb-muted); }
+		.ship-row { display: flex; align-items: center; gap: 10px; padding: 10px 2px; border-bottom: 1px solid var(--sb-line); }
+		.ship-row:last-child { border-bottom: none; }
+		.ship-row .sc { font-weight: 700; }
+		.tcard .badges { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+		.task-pick { display: flex; flex-direction: column; gap: 14px; margin-top: 22px; }
+		.task-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%;
+			padding: 22px 20px; border: 2px solid var(--sb-orange); border-radius: var(--sb-radius);
+			background: var(--sb-card); cursor: pointer; text-align: left; }
+		.task-tile:active { background: #fff7f1; }
+		.task-tile .tt-emoji { font-size: 30px; line-height: 1; }
+		.task-tile .tt-title { font-family: var(--sb-font-display, 'Oswald'); text-transform: uppercase;
+			letter-spacing: .03em; font-weight: 800; font-size: 20px; }
+		.task-tile .tt-sub { color: var(--sb-muted); font-size: 13px; }
+		/* inventory-count coil rows */
+		.ccoil { display: flex; align-items: center; gap: 10px; padding: 11px 12px;
+			border: 1px solid var(--sb-line); border-radius: var(--sb-radius-sm); margin-bottom: 8px; background: var(--sb-card); }
+		.ccoil.moved { border-color: var(--sb-blue, #2f6db5); }
+		.ccoil.qc { border-color: var(--sb-amber, #b9770e); background: #fdf6ec; }
+		.ccoil .code { font-weight: 700; font-size: 15px; }
+		.ccoil .meta { color: var(--sb-muted); font-size: 12px; }
+		.qc-toggle { flex: 0 0 auto; font-size: 12px; font-weight: 700; padding: 7px 13px; border-radius: var(--sb-pill);
+			border: 1px solid var(--sb-line); background: var(--sb-card); cursor: pointer; }
+		.qc-toggle.on { background: var(--sb-amber-bg, #fdf2e0); color: var(--sb-amber, #b9770e); border-color: var(--sb-amber, #b9770e); }
+		.ccoil .rm { flex: 0 0 auto; background: none; border: none; color: var(--sb-muted); font-size: 20px; cursor: pointer; padding: 0 4px; line-height: 1; }
 	</style>
 </head>
 <body class="sb-body">
 	<div class="topbar">
 		<img class="logo" src="/assets/sbx_wmslite/brand/stackbox-logo.svg" alt="StackBox" />
 		<span class="title">WMS Core</span>
+		<button class="switchbtn hide" id="switch-task" title="Switch task">⇄ Task</button>
 		<span class="spacer"></span>
+		<a class="helpbtn" href="/wms-help" target="_blank" rel="noopener" title="User manual" aria-label="Help">?</a>
 		<span class="qbadge" id="qbadge">0 queued</span>
 		<span class="net on" id="net">online</span>
 	</div>
@@ -160,9 +199,10 @@
 		<section id="screen-coils" class="hide">
 			<div class="sb-card" style="padding:16px;">
 				<div class="row">
-					<div>
+					<div style="min-width:0;">
 						<div class="sb-label">Truck</div>
 						<div style="font-size:22px;font-weight:800;" id="c-truck">—</div>
+						<div id="c-ship" class="ship-line"></div>
 					</div>
 					<span class="spacer"></span>
 					<span class="chip-claim hide" id="c-claim"></span>
@@ -211,12 +251,65 @@
 
 		<!-- SCREEN 3: read-only loaded summary -->
 		<section id="screen-summary" class="hide"></section>
+
+		<!-- SCREEN 4: task picker (only shown when the user has >1 task) -->
+		<section id="screen-tasks" class="hide">
+			<div class="sb-label" style="margin-top:10px;">Choose a task</div>
+			<div class="task-pick">
+				<button class="task-tile" id="task-loading">
+					<span class="tt-emoji">🚚</span>
+					<span class="tt-title">Loading</span>
+					<span class="tt-sub">Load trucks — scan &amp; confirm coils</span>
+				</button>
+				<button class="task-tile" id="task-count">
+					<span class="tt-emoji">📋</span>
+					<span class="tt-title">Inventory Count</span>
+					<span class="tt-sub">Map coils to bins — scan a bin, then its coils</span>
+				</button>
+			</div>
+			<div id="task-empty" class="empty hide" style="text-align:center;padding:34px 12px;">
+				No tasks assigned — contact your supervisor.
+			</div>
+		</section>
+
+		<!-- SCREEN 5: inventory count — scan a bin -->
+		<section id="screen-count-bin" class="hide">
+			<div class="sb-card" style="padding:14px;">
+				<div class="sb-label">Inventory Count</div>
+				<h2 class="sb-h2" style="margin:.15em 0 .6em;">Scan a bin to start</h2>
+				<form id="cbin-form" class="scan-row" autocomplete="off" action="javascript:void(0)">
+					<input class="scan-input" id="cbin-input" placeholder="Scan or type bin code" autocomplete="off"
+						autocapitalize="characters" enterkeyhint="go" inputmode="text" />
+					<button type="submit" class="scan-go" id="cbin-go" aria-label="Open bin">&rarr;</button>
+				</form>
+				<div class="hint">Walk to a bin, scan its location barcode — then scan each coil in it.</div>
+			</div>
+		</section>
+
+		<!-- SCREEN 6: inventory count — capture coils in the open bin -->
+		<section id="screen-count" class="hide">
+			<div id="count-context" class="bin-context"></div>
+			<div class="sb-card" style="padding:14px;margin-top:12px;">
+				<form id="ccoil-form" class="scan-row" autocomplete="off" action="javascript:void(0)">
+					<input class="scan-input" id="ccoil-input" placeholder="Scan coil" autocomplete="off"
+						autocapitalize="characters" enterkeyhint="go" inputmode="text" />
+					<button type="submit" class="scan-go" id="ccoil-go" aria-label="Add coil">&rarr;</button>
+				</form>
+				<div class="hint">Scan each coil in this bin. QC defaults to OK — tap the pill only for a hold.</div>
+			</div>
+			<div id="count-list" style="margin-top:14px;"></div>
+		</section>
 	</div>
 
 	<!-- bottom action bar (coil screen) -->
 	<div class="bottombar hide" id="bottombar">
 		<button class="sb-btn sb-btn--ghost" id="btn-back" style="flex:1;">Back</button>
 		<button class="sb-btn sb-btn--primary" id="btn-complete" style="flex:2;">Complete Loading</button>
+	</div>
+
+	<!-- bottom action bar (inventory count screen) -->
+	<div class="bottombar hide" id="count-bottombar">
+		<button class="sb-btn sb-btn--primary" id="cbtn-save" style="flex:1;">Save &amp; next bin</button>
 	</div>
 
 	<!-- generic modal sheet -->
@@ -227,8 +320,10 @@
 		window.WMS_CSRF = CSRF; // exposed for E2E seeding helpers
 		const USER = "{{ full_name }}";
 		let DB = null, CFG = { undo_window_seconds: 120, allow_overscan: 0, qr_decode_rule: "Identity", qr_decode_regex: "",
-			bin_picking_enabled: 0, bin_decode_rule: "Identity", bin_decode_regex: "", allow_pick_outside_bin: 0 };
-		let PLAN = null;          // current plan progress + coils (cached)
+			bin_picking_enabled: 0, bin_decode_rule: "Identity", bin_decode_regex: "", allow_pick_outside_bin: 0,
+			count_enabled: 0, count_qc_default: "OK", loading_group_mode: "By Shipment", completion_mode: "Whole Truck" };
+		let PLAN = null;          // current plan/bundle progress + coils (cached)
+		let HOME = { pending: [], loaded: [] };  // last home payload (per-plan or truck groups)
 		let pendingScan = null;   // coil awaiting confirm
 		let BIN_MODE = false;     // this plan uses bin-directed picking
 		let currentBin = null;    // opened bin code (or UNKNOWN_BIN); null = showing bins-to-visit list
@@ -310,7 +405,7 @@
 				for (const r of results) { if (r.ok !== false) { await idbDel("queue", r.client_event_id); synced++; } }
 				await refreshQueueBadge();
 				if (synced) banner("✅ Synced " + synced + " offline action(s)", "pass");
-				if (PLAN) await loadPlan(PLAN.name, true);
+				if (PLAN) await reloadCurrent();
 			} catch (e) { /* stay queued; will retry on next online */ }
 		}
 
@@ -324,15 +419,17 @@
 			if (!rows.length) { box.innerHTML = '<div class="muted" style="padding:8px;">No open trucks match “' + q + '”.</div>'; return; }
 			for (const r of rows) {
 				const pending = r.pending_coils, total = r.total_coils;
+				const grp = !!r.is_group;
+				const sub = grp && r.shipment_count > 1 ? r.shipment_count + ' shipments · ' : (r.sap_plan_id ? esc(r.sap_plan_id) + ' · ' : (r.plan_status + ' · '));
 				const card = document.createElement("div");
 				card.className = "sb-card"; card.style.cssText = "padding:14px;margin-bottom:10px;cursor:pointer;";
 				card.innerHTML =
-					'<div class="truck-card"><div><div class="big">' + r.truck_number + '</div>' +
-					'<div class="meta muted">' + r.plan_status + ' · ' + r.loaded_coils + '/' + total + ' loaded</div></div>' +
+					'<div class="truck-card"><div><div class="big">' + esc(r.truck_number) + (r.delivery_date ? ' <span class="muted" style="font-size:13px;">· ' + esc(r.delivery_date) + '</span>' : '') + '</div>' +
+					'<div class="meta muted">' + sub + r.loaded_coils + '/' + total + ' loaded</div></div>' +
 					'<span class="spacer"></span>' +
 					(r.claimed_by ? '<span class="chip-claim">in use</span>' : '<span class="sb-chip is-info">' + pending + ' to load</span>') +
 					'</div>';
-				card.onclick = () => selectPlan(r.name);
+				card.onclick = grp ? (() => selectTruck(r)) : (() => selectPlan(r.name));
 				box.appendChild(card);
 			}
 		}
@@ -377,9 +474,75 @@
 			setTimeout(() => $(BIN_MODE ? "bin-input" : "coil-input").focus(), 150);
 		}
 
+		// ---------- By Truck (bundle) ----------
+		const isBundle = () => !!(PLAN && PLAN.is_bundle);
+		const coilPlan = (c) => (c && c.plan) ? c.plan : (PLAN ? PLAN.name : null);
+
+		async function selectTruck(g) {
+			try {
+				const c = await api("sbx_wmslite.truck_api.claim_truck_bundle", { truck: g.truck_number, delivery_date: g.delivery_date || "" });
+				if (c.conflict) return askTruckTakeover(g, c.claimed_by);
+				await loadBundle(g.truck_number, g.delivery_date, true);
+			} catch (e) { banner(e.message, "fail"); }
+		}
+		function askTruckTakeover(g, who) {
+			openSheet('<h3 class="sb-h2">Truck in use</h3><p>This truck is claimed by <b>' + esc(who || "another operator") + '</b>.</p>' +
+				'<div class="row" style="margin-top:14px;"><button class="sb-btn sb-btn--ghost" style="flex:1;" onclick="closeSheet()">Cancel</button>' +
+				'<button class="sb-btn sb-btn--orange" style="flex:1;" id="do-takeover">Take over</button></div>');
+			$("do-takeover").onclick = async () => {
+				closeSheet();
+				try { await api("sbx_wmslite.truck_api.claim_truck_bundle", { truck: g.truck_number, delivery_date: g.delivery_date || "", force: 1 });
+					await loadBundle(g.truck_number, g.delivery_date, true); banner("Took over loading", "info"); }
+				catch (e) { banner(e.message, "fail"); }
+			};
+		}
+		async function loadBundle(truck, delivery_date, online) {
+			const key = "bundle:" + truck + "|" + (delivery_date || "");
+			let p = null;
+			if (online && navigator.onLine) {
+				try { p = await api("sbx_wmslite.truck_api.get_truck_bundle", { truck: truck, delivery_date: delivery_date || "" }); p.name = key; await idbPut("plans", p); }
+				catch (e) { p = await idbGet("plans", key); }
+			} else { p = await idbGet("plans", key); }
+			if (!p) { banner("Truck not available offline", "fail"); return; }
+			p.name = key;
+			PLAN = p; BIN_MODE = false; currentBin = null;
+			renderPlan(); showScreen("coils");
+			setTimeout(() => $("coil-input").focus(), 150);
+		}
+		async function reloadCurrent() {
+			if (!PLAN) return;
+			if (isBundle()) await loadBundle(PLAN.truck_number, PLAN.delivery_date, true);
+			else await loadPlan(PLAN.name, true);
+		}
+
+		function renderShipHeader(p) {
+			const el = $("c-ship");
+			if (p.is_bundle) {
+				const ids = (p.shipments || []).map((s) => s.sap_plan_id).filter(Boolean);
+				if (!ids.length) { el.innerHTML = '<span class="lbl">No shipment ref</span>'; return; }
+				if (ids.length === 1) { el.innerHTML = '<span class="lbl">Shipment</span> <span class="ship-chip">' + esc(ids[0]) + '</span>'; return; }
+				el.innerHTML = '<span class="lbl">Shipments</span> <span class="ship-chip">' + esc(ids[0]) + '</span>' +
+					'<span class="ship-chip more" id="ship-more">+' + (ids.length - 1) + ' more ▾</span>';
+				$("ship-more").onclick = () => shipmentDialog(p);
+			} else {
+				el.innerHTML = p.sap_plan_id ? '<span class="lbl">Shipment</span> <span class="ship-chip">' + esc(p.sap_plan_id) + '</span>' : '';
+			}
+		}
+		function shipmentDialog(p) {
+			const rows = (p.shipments || []).map((s) =>
+				'<div class="ship-row"><div style="flex:1;min-width:0;"><div class="sc">' + esc(s.sap_plan_id || s.plan) + '</div>' +
+				'<div class="muted" style="font-size:12px;">' + esc(s.plan_status) + ' · ' + s.loaded_coils + '/' + s.total_coils + ' loaded' +
+				(s.pending_coils ? ' · ' + s.pending_coils + ' pending' : '') + '</div></div>' +
+				(s.gi_status && s.gi_status !== "Not Required" ? '<span class="sb-chip is-pass">GI ' + esc(s.gi_status) + '</span>' : '') + '</div>').join("");
+			openSheet('<div class="sb-label">Truck ' + esc(p.truck_number) + (p.delivery_date ? ' · ' + esc(p.delivery_date) : '') + '</div>' +
+				'<h2 class="sb-h2" style="margin:.2em 0 .6em;">' + (p.shipments || []).length + ' shipments on this truck</h2>' +
+				rows + '<button class="sb-btn sb-btn--ghost" style="width:100%;margin-top:14px;" onclick="closeSheet()">Close</button>');
+		}
+
 		function renderPlan() {
 			const p = PLAN;
 			$("c-truck").textContent = p.truck_number;
+			renderShipHeader(p);
 			$("c-loaded").textContent = p.loaded_coils;
 			$("c-pending").textContent = p.pending_coils;
 			$("c-skipped").textContent = p.skipped_coils;
@@ -524,26 +687,30 @@
 			raw = (raw || "").trim(); if (!raw) return;
 			$("coil-input").value = "";
 			$("armed").innerHTML = ""; $("armed").classList.add("hide");  // clear any prior armed coil
+			const coilId = decodeInventoryBarcode(raw);  // extract batch code from the scanned inventory QR
 			if (navigator.onLine) {
 				try {
-					const r = await api("sbx_wmslite.api.scan_coil", { plan: PLAN.name, raw_qr: raw });
+					const r = isBundle()
+						? await api("sbx_wmslite.truck_api.scan_coil_bundle", { truck: PLAN.truck_number, delivery_date: PLAN.delivery_date || "", raw_qr: coilId })
+						: await api("sbx_wmslite.api.scan_coil", { plan: PLAN.name, raw_qr: coilId });
 					if (r.matched) {
 						const wrong = binMismatch(r.coil.coil_barcode);
 						if (wrong && !CFG.allow_pick_outside_bin) { logRejectMaybe(r.coil.coil_barcode, raw, "wrong_bin"); return banner("Coil belongs to bin " + wrong + " — not this bin", "fail"); }
 						if (wrong) banner("Heads up: this coil's bin is " + wrong, "info");
 						return armCoil(r.coil, raw);
 					}
-					if (r.reason === "already_loaded") { logRejectMaybe(r.coil_barcode, raw, "already_loaded"); return banner("Already loaded: " + (r.coil_barcode || raw), "fail"); }
-					// not on plan
-					if (r.allow_overscan) return overscanSheet(r.decoded_coil_id || raw, raw);
+					if (r.reason === "already_loaded") { logRejectMaybe(r.coil_barcode, raw, "already_loaded"); return banner("Already loaded: " + (r.coil_barcode || coilId), "fail"); }
+					// not on plan / truck
+					if (r.allow_overscan) return overscanSheet(r.decoded_coil_id || coilId, raw, r.overscan_plan);
 					logRejectMaybe(null, raw, "not_on_plan");
-					return banner("Not on this truck: " + (r.decoded_coil_id || raw), "fail");
+					return banner("Not on this truck: " + (r.decoded_coil_id || coilId), "fail");
 				} catch (e) { banner(e.message, "fail"); }
 			} else {
-				// offline: decode locally + match against cached plan
-				const coil_id = decodeLocal(raw);
+				// offline: match the extracted batch code against the cached plan/bundle
+				const coil_id = coilId;
 				const row = PLAN.coils.find((c) => c.coil_barcode === coil_id);
-				if (!row) { if (CFG.allow_overscan) return overscanSheet(coil_id, raw); return banner("Not on this truck (offline): " + coil_id, "fail"); }
+				const overPlan = isBundle() ? ((PLAN.shipments && PLAN.shipments[0]) ? PLAN.shipments[0].plan : null) : PLAN.name;
+				if (!row) { if (CFG.allow_overscan) return overscanSheet(coil_id, raw, overPlan); return banner("Not on this truck (offline): " + coil_id, "fail"); }
 				if (row.coil_status === "Loaded") return banner("Already loaded: " + coil_id, "fail");
 				const wrong = binMismatch(row.coil_barcode);
 				if (wrong && !CFG.allow_pick_outside_bin) return banner("Coil belongs to bin " + wrong + " — not this bin", "fail");
@@ -552,12 +719,36 @@
 			}
 		}
 
-		function decodeLocal(raw) {
-			raw = (raw || "").trim();
-			if (CFG.qr_decode_rule === "Regex Extract" && CFG.qr_decode_regex) {
-				try { const m = new RegExp(CFG.qr_decode_regex).exec(raw); if (m && m[1]) return m[1].trim(); } catch (e) {}
+		// Extract the coil/batch code from a scanned inventory-barcode QR.
+		// Ported verbatim from the Jindal AppSheet formula: split on "-", trim each
+		// segment, then apply the OEM / extra-code / Jangalpur / default rules.
+		function decodeInventoryBarcode(raw) {
+			const s = (raw || "").trim();
+			if (!s) return "";
+			const parts = s.split("-").map((p) => p.trim());
+			const n = parts.length;
+			const at = (i) => (i >= 1 && i <= n) ? parts[i - 1] : "";
+			const p1 = at(1), p2 = at(2), p3 = at(3), p4 = at(4);
+			const U = (x) => (x || "").toUpperCase();
+			// 1) >=5 segments and segment-2 ends with "OEM" -> p3-p4
+			if (n >= 5 && U(p2).slice(-3) === "OEM") return p3 + "-" + p4;
+			if (n >= 3) {
+				const P = U(p3);
+				// 2) segment-3 is an extra/product code -> the batch is in segment-4
+				const isExtra =
+					(P.slice(0, 3) === "GL " && P.length > 2) ||
+					P.slice(0, 3) === "P1B" || P.slice(0, 2) === "P2" || P.slice(0, 3) === "RM" ||
+					P.slice(0, 3) === "API" || P.slice(0, 6) === "APISFG" || P.slice(0, 3) === "PGL" ||
+					P.slice(0, 3) === "OEM" || P.slice(0, 6) === "EXPORT" ||
+					P.slice(0, 3) === "GC " || P.slice(0, 4) === "PGI ";
+				if (isExtra) return p4;
+				// 3) Jangalpur plant with a non-numeric segment-3 -> p3-p4
+				if (U(p1).includes("JANGALPUR") && !/[0-9]/.test(p3)) return p3 + "-" + p4;
+				// 4) default: the batch is segment-3
+				return p3;
 			}
-			return raw;
+			// <3 segments: use the barcode as-is
+			return s;
 		}
 
 		// inline armed-coil panel (under the scan input)
@@ -586,15 +777,17 @@
 		async function doConfirm() {
 			const { coil, raw } = pendingScan; clearArmed();
 			const cid = uuid();
+			const pl = coilPlan(coil);
 			// optimistic local update
 			const row = PLAN.coils.find((c) => c.coil_barcode === coil.coil_barcode);
 			if (row) { row.coil_status = "Loaded"; recount(); renderPlan(); }
 			banner("✅ Loaded " + coil.coil_barcode, "pass");
 			if (navigator.onLine) {
-				try { const r = await api("sbx_wmslite.api.confirm_load", { plan: PLAN.name, coil_barcode: coil.coil_barcode, scanned_qr: raw, client_event_id: cid }); await syncPlanFrom(r); }
-				catch (e) { await enqueue({ type: "confirm_load", plan: PLAN.name, coil_barcode: coil.coil_barcode, scanned_qr: raw, client_event_id: cid }); }
+				try { const r = await api("sbx_wmslite.api.confirm_load", { plan: pl, coil_barcode: coil.coil_barcode, scanned_qr: raw, client_event_id: cid });
+					if (isBundle()) await idbPut("plans", PLAN); else await syncPlanFrom(r); }
+				catch (e) { await enqueue({ type: "confirm_load", plan: pl, coil_barcode: coil.coil_barcode, scanned_qr: raw, client_event_id: cid }); if (isBundle()) await idbPut("plans", PLAN); }
 			} else {
-				await enqueue({ type: "confirm_load", plan: PLAN.name, coil_barcode: coil.coil_barcode, scanned_qr: raw, client_event_id: cid });
+				await enqueue({ type: "confirm_load", plan: pl, coil_barcode: coil.coil_barcode, scanned_qr: raw, client_event_id: cid });
 				await idbPut("plans", PLAN);
 			}
 			maybeBinDone();
@@ -608,7 +801,8 @@
 			if (left === 0) { banner("Bin complete ✅ — on to the next", "pass"); setTimeout(backToBins, 900); }
 		}
 
-		function overscanSheet(coil_id, raw) {
+		function overscanSheet(coil_id, raw, targetPlan) {
+			const pl = targetPlan || PLAN.name;
 			$("armed").innerHTML =
 				'<div class="armed-card" style="border-color:var(--sb-amber,#b9770e);background:#fdf6ec;">' +
 				'<div class="sb-label">Coil not on plan</div>' +
@@ -622,28 +816,30 @@
 			$("armed").scrollIntoView({ behavior: "smooth", block: "nearest" });
 			$("do-over").onclick = async () => {
 				clearArmed(); const cid = uuid();
-				PLAN.coils.push({ coil_barcode: coil_id, coil_status: "Loaded", unplanned: 1 }); recount(); renderPlan();
+				PLAN.coils.push({ coil_barcode: coil_id, coil_status: "Loaded", unplanned: 1, plan: pl }); recount(); renderPlan();
 				banner("✅ Added & loaded " + coil_id, "pass");
 				if (navigator.onLine) {
-					try { const r = await api("sbx_wmslite.api.overscan_add", { plan: PLAN.name, coil_barcode: coil_id, scanned_qr: raw, client_event_id: cid }); await syncPlanFrom(r); }
-					catch (e) { await enqueue({ type: "overscan_add", plan: PLAN.name, coil_barcode: coil_id, scanned_qr: raw, client_event_id: cid }); }
-				} else { await enqueue({ type: "overscan_add", plan: PLAN.name, coil_barcode: coil_id, scanned_qr: raw, client_event_id: cid }); await idbPut("plans", PLAN); }
+					try { const r = await api("sbx_wmslite.api.overscan_add", { plan: pl, coil_barcode: coil_id, scanned_qr: raw, client_event_id: cid }); if (isBundle()) await idbPut("plans", PLAN); else await syncPlanFrom(r); }
+					catch (e) { await enqueue({ type: "overscan_add", plan: pl, coil_barcode: coil_id, scanned_qr: raw, client_event_id: cid }); if (isBundle()) await idbPut("plans", PLAN); }
+				} else { await enqueue({ type: "overscan_add", plan: pl, coil_barcode: coil_id, scanned_qr: raw, client_event_id: cid }); await idbPut("plans", PLAN); }
 			};
 		}
 
 		async function undoCoil(code) {
 			const cid = uuid();
 			const row = PLAN.coils.find((c) => c.coil_barcode === code);
+			const pl = coilPlan(row);
 			if (row && row.unplanned) { PLAN.coils = PLAN.coils.filter((c) => c.coil_barcode !== code); }
 			else if (row) { row.coil_status = "Pending"; }
 			recount(); renderPlan(); banner("Undone " + code, "info");
 			if (navigator.onLine) {
-				try { const r = await api("sbx_wmslite.api.undo_last_load", { plan: PLAN.name, coil_barcode: code, client_event_id: cid }); await syncPlanFrom(r); }
-				catch (e) { await enqueue({ type: "undo", plan: PLAN.name, coil_barcode: code, client_event_id: cid }); }
-			} else { await enqueue({ type: "undo", plan: PLAN.name, coil_barcode: code, client_event_id: cid }); await idbPut("plans", PLAN); }
+				try { const r = await api("sbx_wmslite.api.undo_last_load", { plan: pl, coil_barcode: code, client_event_id: cid }); if (isBundle()) await idbPut("plans", PLAN); else await syncPlanFrom(r); }
+				catch (e) { await enqueue({ type: "undo", plan: pl, coil_barcode: code, client_event_id: cid }); if (isBundle()) await idbPut("plans", PLAN); }
+			} else { await enqueue({ type: "undo", plan: pl, coil_barcode: code, client_event_id: cid }); await idbPut("plans", PLAN); }
 		}
 
 		function logRejectMaybe(code, raw, reason) {
+			if (isBundle()) return;  // reject logging is per-plan; skip in truck mode
 			if (!navigator.onLine) { enqueue({ type: "reject", plan: PLAN.name, coil_barcode: code, scanned_qr: raw, reason: reason, client_event_id: uuid() }); return; }
 			api("sbx_wmslite.api.log_reject", { plan: PLAN.name, coil_barcode: code, scanned_qr: raw, reason: reason }).catch(() => {});
 		}
@@ -663,19 +859,59 @@
 		}
 
 		// ---------- complete / short-load ----------
-		function onComplete() {
+		let SHORT_SCOPE = null;  // {plan} → short-load one shipment within a bundle (Per Shipment mode)
+
+		async function onComplete() {
 			recount();
+			// By Truck + Per Shipment: complete each shipment from a chooser.
+			if (isBundle() && CFG.completion_mode === "Per Shipment") return perShipmentSheet();
 			if (PLAN.pending_coils === 0) {
-				banner("Truck complete ✅", "pass");
-				setTimeout(goHome, 900);
+				// A full load: tell the server to complete. Fires the SAP goods-issue
+				// (per shipment) and releases held T1 pushes — needs a connection.
+				if (!navigator.onLine) { banner("Completing needs a connection — reconnect and press Complete", "fail"); return; }
+				try {
+					if (isBundle()) await api("sbx_wmslite.truck_api.complete_truck_bundle", { truck: PLAN.truck_number, delivery_date: PLAN.delivery_date || "" });
+					else await api("sbx_wmslite.api.complete_plan", { plan: PLAN.name });
+					banner("Truck complete ✅", "pass");
+					setTimeout(goHome, 900);
+				} catch (e) { banner(e.message, "fail"); }
 				return;
 			}
-			shortLoadSheet();
+			shortLoadSheet(null);
 		}
 
-		function shortLoadSheet() {
-			const pend = PLAN.coils.filter((c) => c.coil_status === "Pending");
-			let rows = pend.map((c, i) =>
+		// Per Shipment completion: one row per shipment; complete or short-load each.
+		function perShipmentSheet() {
+			const open = (PLAN.shipments || []);
+			const rows = open.map((s) => {
+				const done = s.plan_status === "Completed" || s.plan_status === "Completed (Short)";
+				let action;
+				if (done) action = '<span class="sb-chip is-pass">done</span>';
+				else if (s.pending_coils === 0) action = '<button class="sb-btn sb-btn--primary sb-btn--inline sb-btn--sm" data-comp="' + esc(s.plan) + '">Complete</button>';
+				else action = '<button class="sb-btn sb-btn--ghost sb-btn--inline sb-btn--sm" data-short="' + esc(s.plan) + '">' + s.pending_coils + ' pending · Short-load</button>';
+				return '<div class="ship-row"><div style="flex:1;min-width:0;"><div class="sc">' + esc(s.sap_plan_id || s.plan) + '</div>' +
+					'<div class="muted" style="font-size:12px;">' + s.loaded_coils + '/' + s.total_coils + ' loaded</div></div>' + action + '</div>';
+			}).join("");
+			openSheet('<div class="sb-label">Complete by shipment</div><h2 class="sb-h2" style="margin:.2em 0 .6em;">' + esc(PLAN.truck_number) + '</h2>' +
+				rows + '<button class="sb-btn sb-btn--ghost" style="width:100%;margin-top:14px;" onclick="closeSheet()">Close</button>');
+			document.querySelectorAll("#sheet [data-comp]").forEach((b) => b.onclick = async () => {
+				if (!navigator.onLine) { banner("Completing needs a connection", "fail"); return; }
+				try {
+					await api("sbx_wmslite.api.complete_plan", { plan: b.dataset.comp });
+					banner("Shipment complete ✅", "pass"); await reloadCurrent();
+					if (openShipmentsRemain()) perShipmentSheet(); else { closeSheet(); setTimeout(goHome, 700); }
+				} catch (e) { banner(e.message, "fail"); }
+			});
+			document.querySelectorAll("#sheet [data-short]").forEach((b) => b.onclick = () => shortLoadSheet({ plan: b.dataset.short }));
+		}
+		function openShipmentsRemain() {
+			return (PLAN.shipments || []).some((s) => s.plan_status !== "Completed" && s.plan_status !== "Completed (Short)");
+		}
+
+		function shortLoadSheet(scope) {
+			SHORT_SCOPE = scope || null;
+			const pend = PLAN.coils.filter((c) => c.coil_status === "Pending" && (!SHORT_SCOPE || c.plan === SHORT_SCOPE.plan));
+			let rows = pend.map((c) =>
 				'<div class="coil"><div style="flex:1;"><div class="code">' + c.coil_barcode + '</div></div>' +
 				'<select class="sb-input" data-code="' + c.coil_barcode + '" style="max-width:160px;">' +
 				['Damaged', 'Not Available', 'Quality Hold', 'Truck Full', 'Other'].map((r) => '<option>' + r + '</option>').join("") +
@@ -695,7 +931,9 @@
 			if (!navigator.onLine) { banner("Short-load approval needs a connection", "fail"); return; }
 			const skips = Array.from(document.querySelectorAll("#sheet select[data-code]")).map((s) => ({ coil_barcode: s.getAttribute("data-code"), reason: s.value }));
 			try {
-				await api("sbx_wmslite.api.request_short_load", { plan: PLAN.name, skips: JSON.stringify(skips) });
+				if (SHORT_SCOPE) await api("sbx_wmslite.api.request_short_load", { plan: SHORT_SCOPE.plan, skips: JSON.stringify(skips) });
+				else if (isBundle()) await api("sbx_wmslite.truck_api.request_short_load_bundle", { truck: PLAN.truck_number, delivery_date: PLAN.delivery_date || "", skips: JSON.stringify(skips) });
+				else await api("sbx_wmslite.api.request_short_load", { plan: PLAN.name, skips: JSON.stringify(skips) });
 				approvalSheet();
 			} catch (e) { banner(e.message, "fail"); }
 		}
@@ -710,12 +948,22 @@
 				'<button class="sb-btn sb-btn--primary" style="flex:2;" id="do-approve">Approve &amp; Complete</button></div>'
 			);
 			$("do-approve").onclick = async () => {
-				try { await api("sbx_wmslite.api.approve_short_load", { plan: PLAN.name, pin: $("pin-input").value }); closeSheet(); banner("Completed (short) ✅", "pass"); setTimeout(goHome, 900); }
-				catch (e) { banner(e.message, "fail"); }
+				try {
+					if (SHORT_SCOPE) await api("sbx_wmslite.api.approve_short_load", { plan: SHORT_SCOPE.plan, pin: $("pin-input").value });
+					else if (isBundle()) await api("sbx_wmslite.truck_api.approve_short_load_bundle", { truck: PLAN.truck_number, delivery_date: PLAN.delivery_date || "", pin: $("pin-input").value });
+					else await api("sbx_wmslite.api.approve_short_load", { plan: PLAN.name, pin: $("pin-input").value });
+					closeSheet();
+					if (SHORT_SCOPE) { SHORT_SCOPE = null; banner("Shipment completed (short) ✅", "pass"); await reloadCurrent(); if (openShipmentsRemain()) perShipmentSheet(); else setTimeout(goHome, 700); }
+					else { banner("Completed (short) ✅", "pass"); setTimeout(goHome, 900); }
+				} catch (e) { banner(e.message, "fail"); }
 			};
 			$("do-decline").onclick = async () => {
-				try { await api("sbx_wmslite.api.decline_short_load", { plan: PLAN.name, pin: $("pin-input").value }); closeSheet(); await loadPlan(PLAN.name, true); banner("Declined — keep loading", "info"); }
-				catch (e) { banner(e.message, "fail"); }
+				try {
+					if (SHORT_SCOPE) { await api("sbx_wmslite.api.decline_short_load", { plan: SHORT_SCOPE.plan, pin: $("pin-input").value }); SHORT_SCOPE = null; }
+					else if (isBundle()) await api("sbx_wmslite.truck_api.decline_short_load_bundle", { truck: PLAN.truck_number, delivery_date: PLAN.delivery_date || "", pin: $("pin-input").value });
+					else await api("sbx_wmslite.api.decline_short_load", { plan: PLAN.name, pin: $("pin-input").value });
+					closeSheet(); await reloadCurrent(); banner("Declined — keep loading", "info");
+				} catch (e) { banner(e.message, "fail"); }
 			};
 		}
 
@@ -740,21 +988,24 @@
 			renderHome(data || { pending: [], loaded: [], stats: {} }, staleTs);
 		}
 
-		function tcard(t, done) {
+		function tcard(t, done, list, idx) {
 			const pct = t.total_coils ? Math.round(100 * t.loaded_coils / t.total_coils) : 0;
 			const claim = (!done && t.claimed_by) ? '<span class="chip-inuse">in use</span>' : "";
+			const shipChip = (t.is_group && t.shipment_count > 1) ? '<span class="sb-chip is-info">' + t.shipment_count + ' shipments</span>' : "";
 			const badge = done
-				? '<span class="sb-chip is-pass">' + esc(t.plan_status) + (t.gi_status && t.gi_status !== "Not Required" ? " · GI " + esc(t.gi_status) : "") + '</span>'
+				? '<span class="sb-chip is-pass">' + esc(t.plan_status || "Completed") + (t.gi_status && t.gi_status !== "Not Required" ? " · GI " + esc(t.gi_status) : "") + '</span>'
 				: (t.plan_status === "Pending Approval" ? '<span class="sb-chip is-fail">awaiting approval</span>' : '<span class="sb-chip is-info">' + t.pending_coils + ' to load</span>');
-			return '<div class="tcard' + (done ? ' done' : '') + '" data-plan="' + esc(t.name) + '" data-done="' + (done ? 1 : 0) + '">' +
-				'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:16px;">' + esc(t.truck_number) + '</div>' +
+			const dd = t.delivery_date ? ' · ' + esc(t.delivery_date) : "";
+			return '<div class="tcard' + (done ? ' done' : '') + '" data-list="' + list + '" data-idx="' + idx + '" data-done="' + (done ? 1 : 0) + '">' +
+				'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:16px;">' + esc(t.truck_number) + dd + '</div>' +
 				'<div class="meta" style="color:var(--sb-muted);font-size:12px;">' + t.loaded_coils + '/' + t.total_coils + ' loaded' + (t.skipped_coils ? ' · ' + t.skipped_coils + ' skipped' : '') + '</div>' +
 				'<div class="miniprog"><i style="width:' + pct + '%"></i></div></div>' +
-				'<div style="text-align:right;">' + claim + badge + '</div>' +
+				'<div class="badges">' + claim + shipChip + badge + '</div>' +
 				'<span class="chev">›</span></div>';
 		}
 
 		function renderHome(data, staleTs) {
+			HOME = { pending: data.pending || [], loaded: data.loaded || [] };
 			const s = data.stats || {};
 			let html = (staleTs ? '<div class="stale">📡 Offline — showing data as of ' + new Date(staleTs).toLocaleTimeString() + '</div>' : '');
 			$("home-stale").innerHTML = html;
@@ -762,14 +1013,39 @@
 				'<div class="s"><b>' + (s.pending || 0) + '</b><span>Pending</span></div>' +
 				'<div class="s"><b>' + (s.loaded_today || 0) + '</b><span>Loaded today</span></div>' +
 				'<div class="s"><b>' + (s.coils_today || 0) + '</b><span>Coils today</span></div>';
-			$("list-pending").innerHTML = (data.pending && data.pending.length)
-				? data.pending.map((t) => tcard(t, false)).join("") : '<div class="empty">Nothing to load 🎉</div>';
-			$("list-loaded").innerHTML = (data.loaded && data.loaded.length)
-				? data.loaded.map((t) => tcard(t, true)).join("") : '<div class="empty">Nothing loaded yet today</div>';
+			$("list-pending").innerHTML = HOME.pending.length
+				? HOME.pending.map((t, i) => tcard(t, false, "pending", i)).join("") : '<div class="empty">Nothing to load 🎉</div>';
+			$("list-loaded").innerHTML = HOME.loaded.length
+				? HOME.loaded.map((t, i) => tcard(t, true, "loaded", i)).join("") : '<div class="empty">Nothing loaded yet today</div>';
 			document.querySelectorAll("#screen-home .tcard").forEach((el) => el.onclick = () => {
-				if (el.getAttribute("data-done") === "1") openLoadedSummary(el.dataset.plan);
-				else selectPlan(el.dataset.plan);
+				const item = HOME[el.dataset.list][+el.dataset.idx];
+				const done = el.getAttribute("data-done") === "1";
+				if (item.is_group) { done ? openTruckSummary(item) : selectTruck(item); }
+				else { done ? openLoadedSummary(item.name) : selectPlan(item.name); }
 			});
+		}
+
+		async function openTruckSummary(g) {
+			let p = null;
+			try { p = await api("sbx_wmslite.truck_api.get_truck_bundle", { truck: g.truck_number, delivery_date: g.delivery_date || "", scope: "done" }); }
+			catch (e) { banner(e.message, "fail"); return; }
+			if (!p) return;
+			const loaded = p.coils.filter((c) => c.coil_status === "Loaded");
+			const skipped = p.coils.filter((c) => c.coil_status === "Skipped");
+			const row = (c) => '<div class="coil' + (c.coil_status === "Loaded" ? " loaded" : c.coil_status === "Skipped" ? " skipped" : "") + '">' +
+				'<div style="flex:1;"><div class="code">' + esc(c.coil_barcode) + '</div>' +
+				'<div class="meta">' + esc(c.material_grade || "") + (c.sap_plan_id ? ' · ' + esc(c.sap_plan_id) : '') + (c.skip_reason ? ' · ' + esc(c.skip_reason) : '') + '</div></div></div>';
+			const ships = (p.shipments || []).map((s) => '<span class="ship-chip">' + esc(s.sap_plan_id || s.plan) +
+				(s.gi_status && s.gi_status !== "Not Required" ? ' · GI ' + esc(s.gi_status) : '') + '</span>').join(" ");
+			$("screen-summary").innerHTML =
+				'<div class="sb-card" style="padding:16px;"><div class="sb-label">Loaded truck</div>' +
+				'<h2 class="sb-h1" style="margin:.1em 0;">' + esc(p.truck_number) + '</h2>' +
+				'<p class="muted">' + p.loaded_coils + '/' + p.total_coils + ' loaded' + (p.skipped_coils ? ' · ' + p.skipped_coils + ' skipped' : '') + '</p>' +
+				'<div class="ship-line" style="margin-top:6px;">' + ships + '</div></div>' +
+				(loaded.length ? '<div class="sb-label" style="margin:14px 2px 6px;">Loaded</div>' + loaded.map(row).join("") : '') +
+				(skipped.length ? '<div class="sb-label" style="margin:14px 2px 6px;">Skipped</div>' + skipped.map(row).join("") : '') +
+				'<button class="sb-btn sb-btn--ghost" style="width:100%;margin-top:14px;" onclick="goHome()">← Back to Home</button>';
+			showScreen("summary");
 		}
 
 		async function openLoadedSummary(name) {
@@ -794,12 +1070,178 @@
 			showScreen("summary");
 		}
 
+		// ---------- TASKS (loading vs inventory count) ----------
+		let TASKS = ["loading"];   // filled at boot from my_tasks()
+		async function loadTasks() {
+			try { const r = await api("sbx_wmslite.count_api.my_tasks"); TASKS = r.tasks || []; await idbPut("kv", { k: "tasks", v: TASKS }); }
+			catch (e) { const c = await idbGet("kv", "tasks"); TASKS = c ? c.v : ["loading"]; }
+			$("switch-task").classList.toggle("hide", TASKS.length <= 1);
+			return TASKS;
+		}
+		function routeInitial() {
+			if (!TASKS.length) return showNoTasks();
+			if (TASKS.length === 1) return startTask(TASKS[0]);
+			// >1 task: land on the remembered one, else show the picker
+			idbGet("kv", "task").then((c) => {
+				const remembered = c && TASKS.includes(c.v) ? c.v : null;
+				if (remembered) startTask(remembered); else showTaskPicker();
+			});
+		}
+		function showTaskPicker() {
+			$("task-empty").classList.add("hide");
+			document.querySelector(".task-pick").classList.remove("hide");
+			showScreen("tasks");
+		}
+		function showNoTasks() {
+			document.querySelector(".task-pick").classList.add("hide");
+			$("task-empty").classList.remove("hide");
+			showScreen("tasks");
+		}
+		function startTask(task) {
+			idbPut("kv", { k: "task", v: task });
+			if (task === "count") goCountBin(); else goHome();
+		}
+
+		// ---------- INVENTORY COUNT ----------
+		let COUNT = null;   // { bin_code, coils: [{coil_barcode, qc, material_grade, weight, moved_from, existing, cid, raw}] }
+		const COUNT_RENDER_CAP = 80;
+
+		function goCountBin() {
+			COUNT = null;
+			$("cbin-input").value = "";
+			showScreen("count-bin");
+			setTimeout(() => $("cbin-input").focus(), 120);
+		}
+
+		async function handleCountBinScan(raw) {
+			raw = (raw || "").trim(); if (!raw) return;
+			$("cbin-input").value = "";
+			const bin = decodeBinLocal(raw);
+			if (navigator.onLine) {
+				try {
+					const r = await api("sbx_wmslite.count_api.count_open_bin", { raw_bin: raw });
+					COUNT = { bin_code: r.bin_code, coils: (r.coils || []).map((c) => ({
+						coil_barcode: c.coil_barcode, qc: c.qc, material_grade: c.material_grade, weight: c.weight, existing: 1 })) };
+				} catch (e) { banner(e.message, "fail"); return; }
+			} else {
+				COUNT = { bin_code: bin, coils: [] };
+				banner("Offline — fresh count for bin " + bin, "info");
+			}
+			renderCount();
+			showScreen("count");
+			setTimeout(() => $("ccoil-input").focus(), 120);
+		}
+
+		function renderCount() {
+			const c = COUNT; if (!c) return;
+			const qcN = c.coils.filter((x) => x.qc).length;
+			$("count-context").innerHTML =
+				'<div style="flex:1;min-width:0;"><div class="bx-code">' + esc(c.bin_code) + '</div>' +
+				'<div class="bx-loc">' + c.coils.length + ' coil' + (c.coils.length === 1 ? '' : 's') + (qcN ? ' · ' + qcN + ' QC' : '') + '</div></div>';
+			renderCountList();
+		}
+
+		function countRowHtml(x) {
+			const code = esc(x.coil_barcode);
+			const meta = [x.material_grade, x.weight ? x.weight + ' kg' : '',
+				x.moved_from ? 'moved from ' + x.moved_from : (x.existing ? 'already here' : '')].filter(Boolean).map(esc).join(' · ');
+			return '<div class="ccoil' + (x.qc ? ' qc' : '') + (x.moved_from ? ' moved' : '') + '" data-coil="' + code + '">' +
+				'<div style="flex:1;min-width:0;"><div class="code">' + code + '</div>' + (meta ? '<div class="meta">' + meta + '</div>' : '') + '</div>' +
+				'<button class="qc-toggle' + (x.qc ? ' on' : '') + '" data-coil="' + code + '">' + (x.qc ? 'QC' : 'OK') + '</button>' +
+				'<button class="rm" data-coil="' + code + '" aria-label="Remove">✕</button></div>';
+		}
+
+		function renderCountList() {
+			const list = $("count-list");
+			const coils = COUNT.coils.slice().reverse();  // newest on top
+			const shown = coils.slice(0, COUNT_RENDER_CAP);
+			let html = shown.map(countRowHtml).join("");
+			if (coils.length > COUNT_RENDER_CAP) html += '<div class="empty">… and ' + (coils.length - COUNT_RENDER_CAP) + ' more counted</div>';
+			list.innerHTML = html || '<div class="empty">No coils counted in this bin yet.</div>';
+			list.querySelectorAll(".qc-toggle").forEach((el) => el.onclick = () => toggleQc(el.getAttribute("data-coil")));
+			list.querySelectorAll(".rm").forEach((el) => el.onclick = () => removeCountCoil(el.getAttribute("data-coil")));
+		}
+
+		async function handleCountCoilScan(raw) {
+			raw = (raw || "").trim(); if (!raw || !COUNT) return;
+			$("ccoil-input").value = "";
+			const coilId = decodeInventoryBarcode(raw);
+			if (!coilId) return banner("Couldn't read that coil", "fail");
+			const dup = COUNT.coils.find((x) => x.coil_barcode === coilId);
+			if (dup) { banner("Already counted in this bin: " + coilId, "info"); if (navigator.vibrate) navigator.vibrate(30); return; }
+			const cid = uuid();
+			const qc = CFG.count_qc_default === "QC" ? 1 : 0;
+			const rowObj = { coil_barcode: coilId, qc: qc, cid: cid, raw: raw };
+			COUNT.coils.push(rowObj);
+			renderCount();
+			banner("✅ Counted " + coilId, "pass");
+			if (navigator.onLine) {
+				try {
+					const r = await api("sbx_wmslite.count_api.count_scan", { bin_code: COUNT.bin_code, raw_qr: raw, client_event_id: cid, qc: qc });
+					if (r.coil_id) rowObj.coil_barcode = r.coil_id;
+					if (r.moved) rowObj.moved_from = r.previous_bin;
+					if (r.existing) rowObj.existing = 1;
+					renderCount();
+				} catch (e) {
+					await enqueue({ type: "count_scan", bin_code: COUNT.bin_code, raw_qr: raw, coil_barcode: coilId, qc: qc, client_event_id: cid });
+				}
+			} else {
+				await enqueue({ type: "count_scan", bin_code: COUNT.bin_code, raw_qr: raw, coil_barcode: coilId, qc: qc, client_event_id: cid });
+			}
+			$("ccoil-input").focus();
+		}
+
+		async function toggleQc(coil) {
+			const row = COUNT.coils.find((x) => x.coil_barcode === coil);
+			if (!row) return;
+			row.qc = row.qc ? 0 : 1;
+			renderCount();
+			if (navigator.onLine) {
+				try { await api("sbx_wmslite.count_api.count_set_qc", { bin_code: COUNT.bin_code, coil_barcode: coil, qc: row.qc }); }
+				catch (e) { await enqueue({ type: "count_scan", bin_code: COUNT.bin_code, raw_qr: row.raw || coil, coil_barcode: coil, qc: row.qc, client_event_id: uuid() }); }
+			} else {
+				await enqueue({ type: "count_scan", bin_code: COUNT.bin_code, raw_qr: row.raw || coil, coil_barcode: coil, qc: row.qc, client_event_id: uuid() });
+			}
+		}
+
+		async function removeCountCoil(coil) {
+			const idx = COUNT.coils.findIndex((x) => x.coil_barcode === coil);
+			if (idx < 0) return;
+			const row = COUNT.coils[idx];
+			COUNT.coils.splice(idx, 1);
+			renderCount();
+			banner("Removed " + coil, "info");
+			// If the scan is still queued (never reached the server), just drop it.
+			if (row.cid) {
+				const q = await idbGet("queue", row.cid);
+				if (q) { await idbDel("queue", row.cid); await refreshQueueBadge(); return; }
+			}
+			if (navigator.onLine) {
+				try { await api("sbx_wmslite.count_api.count_remove", { bin_code: COUNT.bin_code, coil_barcode: coil, client_event_id: row.cid }); }
+				catch (e) { await enqueue({ type: "count_remove", bin_code: COUNT.bin_code, coil_barcode: coil, client_event_id: row.cid || uuid() }); }
+			} else {
+				await enqueue({ type: "count_remove", bin_code: COUNT.bin_code, coil_barcode: coil, client_event_id: row.cid || uuid() });
+			}
+		}
+
+		async function countFinish() {
+			const bin = COUNT ? COUNT.bin_code : null;
+			await syncQueue();
+			if (bin && navigator.onLine) { try { await api("sbx_wmslite.count_api.count_finish", { bin_code: bin }); } catch (e) {} }
+			banner("Saved ✅ — next bin", "pass");
+			goCountBin();
+		}
+
 		// ---------- screens / sheet ----------
 		function showScreen(which) {
 			$("screen-home").classList.toggle("hide", which !== "home");
 			$("screen-coils").classList.toggle("hide", which !== "coils");
 			$("screen-summary").classList.toggle("hide", which !== "summary");
+			$("screen-tasks").classList.toggle("hide", which !== "tasks");
+			$("screen-count-bin").classList.toggle("hide", which !== "count-bin");
+			$("screen-count").classList.toggle("hide", which !== "count");
 			$("bottombar").classList.toggle("hide", which !== "coils");
+			$("count-bottombar").classList.toggle("hide", which !== "count");
 		}
 		function openSheet(html) { $("sheet").innerHTML = html; $("scrim").classList.add("show"); }
 		function closeSheet() { $("scrim").classList.remove("show"); $("sheet").innerHTML = ""; }
@@ -838,6 +1280,18 @@
 		$("btn-complete").onclick = onComplete;
 		$("home-refresh").onclick = loadHome;
 
+		// inventory-count wiring (task picker + bin/coil count screens)
+		$("task-loading").onclick = () => startTask("loading");
+		$("task-count").onclick = () => startTask("count");
+		$("switch-task").onclick = () => { if (TASKS.length > 1) showTaskPicker(); };
+		$("cbin-form").addEventListener("submit", (e) => { e.preventDefault(); handleCountBinScan($("cbin-input").value); });
+		$("ccoil-form").addEventListener("submit", (e) => { e.preventDefault(); handleCountCoilScan($("ccoil-input").value); });
+		$("cbin-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); handleCountBinScan($("cbin-input").value); } });
+		$("ccoil-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); handleCountCoilScan($("ccoil-input").value); } });
+		autoScanWatch($("cbin-input"), handleCountBinScan);
+		autoScanWatch($("ccoil-input"), handleCountCoilScan);
+		$("cbtn-save").onclick = countFinish;
+
 		// ---------- boot ----------
 		(async function boot() {
 			setNet();
@@ -845,9 +1299,8 @@
 			await refreshQueueBadge();
 			try { CFG = await api("sbx_wmslite.api.get_client_config"); await idbPut("kv", { k: "cfg", v: CFG }); }
 			catch (e) { const c = await idbGet("kv", "cfg"); if (c) CFG = c.v; }
-			showScreen("home");
-			loadHome();
-			$("truck-input").focus();
+			await loadTasks();
+			routeInitial();
 			syncQueue();
 			if ("serviceWorker" in navigator) navigator.serviceWorker.register("/wms-loading-sw.js", { scope: "/wms-loading" }).catch(() => {});
 		})();

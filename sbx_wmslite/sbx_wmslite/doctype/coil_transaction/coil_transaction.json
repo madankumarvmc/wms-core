@@ -184,6 +184,12 @@
    "read": 1,
    "report": 1,
    "role": "Loading Supervisor"
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "Inventory Recorder",
+   "write": 1
   }
  ],
  "row_format": "Dynamic",

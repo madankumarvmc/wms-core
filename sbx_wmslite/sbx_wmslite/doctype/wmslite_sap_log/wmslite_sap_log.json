@@ -44,7 +44,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Action",
-   "options": "Create\nUpdate\nCancel\nGoods Issue"
+   "options": "Create\nUpdate\nCancel\nGoods Issue\nLoading"
   },
   {
    "fieldname": "result",

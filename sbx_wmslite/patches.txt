@@ -3,3 +3,5 @@
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
+sbx_wmslite.patches.v1_inventory_count
+sbx_wmslite.patches.v2_loading_model

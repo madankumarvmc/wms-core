@@ -1,9 +1,12 @@
 """Create the WMSLite roles and grant their permissions.
 
-Two roles:
+Three roles:
   * 'Loading Operator'   — field/bay users: look up trucks + scan/confirm coils.
   * 'Loading Supervisor' — back-office console users: import, approve short-loads,
     cancel/reopen plans, manage the doctypes (NOT full System Manager).
+  * 'Inventory Recorder' — HHT users who capture the bin<->coil mapping via the
+    Inventory Count task (scan bin, scan coils). Writes Coil Transaction /
+    Bin Inventory only; no loading rights.
 
 Run:
     bench --site <site> console
@@ -17,6 +20,7 @@ import frappe
 
 OPERATOR = "Loading Operator"
 SUPERVISOR = "Loading Supervisor"
+INVENTORY = "Inventory Recorder"
 
 # Full manage rights for the console — but not System Manager.
 _MANAGE = {"read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1, "print": 1}
@@ -36,7 +40,15 @@ ROLE_PERMS = {
 		"Import Batch": _MANAGE,
 		"WMSLite SAP Confirmation": _MANAGE,
 		"Bin Inventory": _MANAGE,
+		"Coil Transaction": _MANAGE,
 		"WMSLite Settings": {"read": 1, "write": 1},
+	},
+	INVENTORY: {
+		# Inventory Count = a producer of Coil Transaction rows (source In-app)
+		# that derive into Bin Inventory. No Loading Plan / Coil Load Event access.
+		"Coil Transaction": {"read": 1, "write": 1, "create": 1},
+		"Bin Inventory": {"read": 1, "write": 1},
+		"WMSLite Settings": {"read": 1},
 	},
 }
 

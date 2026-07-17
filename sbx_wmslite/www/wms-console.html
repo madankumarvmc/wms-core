@@ -46,6 +46,7 @@
 			</div>
 			<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;opacity:.6;margin-bottom:8px;">WMS Core</div>
 			<nav id="nav"></nav>
+			<a href="/wms-help" target="_blank" rel="noopener" style="display:block;margin-top:14px;padding:9px 12px;border-radius:8px;color:#fff;text-decoration:none;opacity:.7;font-size:13px;">? Help / Manual</a>
 			<div style="position:absolute;bottom:16px;font-size:12px;opacity:.6;">{{ full_name }}</div>
 		</aside>
 		<main style="padding:24px 28px;width:100%;min-width:0;">
@@ -61,8 +62,9 @@
 		const CSRF = "{{ csrf_token }}";
 		window.WMS_CSRF = CSRF; // exposed for E2E seeding helpers
 		const $ = (id) => document.getElementById(id);
-		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["confirmations", "SAP Confirmations"], ["saplog", "SAP Log"], ["import", "Import"]];
+		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["confirmations", "SAP Confirmations"], ["saploading", "SAP Loading"], ["saplog", "SAP Log"], ["import", "Import"]];
 		const GI_PILL = { "Confirmed": "done", "Pending": "open", "Held": "appr", "Sending": "prog", "Failed (Retryable)": "prog", "Failed (Business)": "canc", "Exhausted": "canc", "Not Required": "canc" };
+		const T1_PILL = { "Sent": "done", "Pending": "open", "Failed": "canc", "Not Required": "canc" };
 		let state = { view: "dashboard" };
 
 		async function api(method, args) {
@@ -107,6 +109,7 @@
 				if (state.view === "trucks") return renderTrucks(c);
 				if (state.view === "inventory") return renderInventory(c);
 				if (state.view === "confirmations") return renderConfirmations(c);
+				if (state.view === "saploading") return renderSapLoading(c);
 				if (state.view === "saplog") return renderSapLog(c);
 				if (state.view === "import") return renderImport(c);
 			} catch (e) { c.innerHTML = '<p style="color:#a23b2e;">' + esc(e.message) + '</p>'; }
@@ -175,12 +178,19 @@
 				'<div style="display:flex;align-items:center;"><h2 class="sb-h1" style="margin:0;flex:1;">' + esc(p.truck_number) + '</h2>' + pill(p.plan_status) + '</div>' +
 				'<p class="sb-muted">' + esc(p.name) + ' · ' + esc(p.source) + (p.sap_plan_id ? ' · SAP ' + esc(p.sap_plan_id) : '') + '</p>' +
 				'<div class="row" style="display:flex;gap:8px;margin:12px 0;">' +
+				(p.plan_status === "Ready to Complete" ? '<button class="sb-btn sb-btn--primary sb-btn--inline" id="d-complete">Complete loading</button>' : '') +
 				(p.plan_status !== "Cancelled" ? '<button class="sb-btn sb-btn--ghost sb-btn--inline" id="d-cancel">Cancel plan</button>' : '<button class="sb-btn sb-btn--ghost sb-btn--inline" id="d-reopen">Reopen</button>') +
 				'</div>' +
 				'<div class="sb-label" style="margin-top:8px;">Coils (' + p.loaded_coils + '/' + p.total_coils + ' loaded)</div>' +
-				'<table class="grid"><thead><tr><th>Coil</th><th>Status</th><th>Grade</th><th>By</th></tr></thead><tbody>' +
-				d.coils.map(c => '<tr><td>' + esc(c.coil_barcode) + (c.unplanned ? ' <span class="sb-muted">(unplanned)</span>' : '') + '</td><td>' + esc(c.coil_status) +
-					(c.skip_reason ? ' <span class="sb-muted">(' + esc(c.skip_reason) + ')</span>' : '') + '</td><td>' + esc(c.material_grade || "") + '</td><td>' + esc(c.loaded_by || "—") + '</td></tr>').join("") +
+				'<table class="grid"><thead><tr><th>Coil</th><th>Status</th><th>Grade</th><th>By</th><th>SAP T1</th></tr></thead><tbody>' +
+				d.coils.map(c => {
+					const t1 = c.sap_loading_status
+						? '<span class="pill ' + (T1_PILL[c.sap_loading_status] || "canc") + '" title="' + esc(c.sap_loading_message || "") + '">' + esc(c.sap_loading_status) + '</span>' +
+							(c.sap_loading_status === "Failed" ? ' <button class="sb-btn sb-btn--orange sb-btn--inline" style="padding:4px 9px;font-size:11px;" data-t1retry="' + esc(c.name) + '">Retry</button>' : '')
+						: '<span class="sb-muted">—</span>';
+					return '<tr><td>' + esc(c.coil_barcode) + (c.unplanned ? ' <span class="sb-muted">(unplanned)</span>' : '') + '</td><td>' + esc(c.coil_status) +
+						(c.skip_reason ? ' <span class="sb-muted">(' + esc(c.skip_reason) + ')</span>' : '') + '</td><td>' + esc(c.material_grade || "") + '</td><td>' + esc(c.loaded_by || "—") + '</td><td style="white-space:nowrap;">' + t1 + '</td></tr>';
+				}).join("") +
 				'</tbody></table>' +
 				'<div class="sb-label" style="margin-top:18px;">Events</div>' +
 				'<table class="grid"><thead><tr><th>Time</th><th>Event</th><th>Coil</th><th>Operator</th><th>Detail</th></tr></thead><tbody>' +
@@ -188,8 +198,11 @@
 					'</td><td>' + esc(e.coil_barcode || "") + '</td><td>' + esc(e.operator || e.approver || "") + '</td><td class="sb-muted">' + esc(e.reason || "") + '</td></tr>').join("") +
 				'</tbody></table>'
 			);
+			const okb = $("d-complete"); if (okb) okb.onclick = async () => { if (confirm("Complete loading for this truck? This fires the SAP goods-issue and T1 pushes.")) { try { await api("sbx_wmslite.console_api.complete_plan", { plan }); closeDrawer(); render(); } catch (e) { alert(e.message); } } };
 			const cb = $("d-cancel"); if (cb) cb.onclick = async () => { if (confirm("Cancel this plan?")) { await api("sbx_wmslite.console_api.cancel_plan", { plan }); closeDrawer(); render(); } };
 			const rb = $("d-reopen"); if (rb) rb.onclick = async () => { await api("sbx_wmslite.console_api.cancel_plan", { plan, reopen: 1 }); closeDrawer(); render(); };
+			document.querySelectorAll("[data-t1retry]").forEach(b => b.onclick = async () => {
+				try { await api("sbx_wmslite.console_api.retry_coil_loading", { coil: b.dataset.t1retry }); truckDrawer(plan); } catch (e) { alert(e.message); } });
 		}
 
 		// ---------- SAP confirmations (outbound GI) ----------
@@ -203,17 +216,65 @@
 						let actions = "";
 						if (r.status === "Held") actions += '<button class="sb-btn sb-btn--primary sb-btn--inline" style="padding:7px 12px;font-size:12px;" data-rel="' + esc(r.name) + '">Release</button> ';
 						if (["Failed (Retryable)", "Failed (Business)", "Exhausted"].includes(r.status)) actions += '<button class="sb-btn sb-btn--orange sb-btn--inline" style="padding:7px 12px;font-size:12px;" data-retry="' + esc(r.name) + '">Retry</button> ';
-						return '<tr><td><b>' + esc(r.truck_number) + '</b></td><td>' + esc(r.confirmation_type) +
+						return '<tr class="click" data-cf="' + esc(r.name) + '"><td><b>' + esc(r.truck_number) + '</b></td><td>' + esc(r.confirmation_type) +
 							'</td><td><span class="pill ' + (GI_PILL[r.status] || "canc") + '">' + esc(r.status) + '</span></td><td>' + (r.attempts || 0) +
 							'</td><td>' + esc(r.sap_gi_document || "—") + '</td><td class="sb-muted">' + esc(r.last_error || "") + '</td><td style="white-space:nowrap;">' + actions + '</td></tr>';
 					}).join("") : '<tr><td colspan="7" class="sb-muted">No confirmations yet</td></tr>') + '</tbody></table>';
-				document.querySelectorAll("#cf-table [data-rel]").forEach(b => b.onclick = async () => {
+				document.querySelectorAll("#cf-table [data-rel]").forEach(b => b.onclick = async (e) => {
+					e.stopPropagation();
 					try { await api("sbx_wmslite.console_api.release_confirmation", { name: b.dataset.rel }); load(); } catch (e) { alert(e.message); } });
-				document.querySelectorAll("#cf-table [data-retry]").forEach(b => b.onclick = async () => {
+				document.querySelectorAll("#cf-table [data-retry]").forEach(b => b.onclick = async (e) => {
+					e.stopPropagation();
 					try { await api("sbx_wmslite.console_api.retry_confirmation", { name: b.dataset.retry }); load(); } catch (e) { alert(e.message); } });
+				document.querySelectorAll("#cf-table tr.click").forEach(tr => tr.onclick = () => confDrawer(tr.dataset.cf));
 			};
 			$("cf-from").onchange = load; $("cf-to").onchange = load;
 			$("cf-clear").onclick = () => { $("cf-from").value = ""; $("cf-to").value = ""; load(); };
+			load();
+		}
+
+		async function confDrawer(name) {
+			const d = await api("sbx_wmslite.console_api.get_confirmation_detail", { name });
+			let payload = d.payload; try { payload = JSON.stringify(JSON.parse(d.payload), null, 2); } catch (e) { }
+			openDrawer(
+				'<div style="display:flex;align-items:center;"><h2 class="sb-h1" style="margin:0;flex:1;">' + esc(d.truck_number) + '</h2>' +
+				'<span class="pill ' + (GI_PILL[d.status] || "canc") + '">' + esc(d.status) + '</span></div>' +
+				'<p class="sb-muted">' + esc(d.name) + ' · ' + esc(d.confirmation_type) + (d.sap_plan_id ? ' · SAP ' + esc(d.sap_plan_id) : '') + '</p>' +
+				'<table class="grid"><tbody>' +
+				'<tr><td class="sb-muted">Attempts</td><td>' + (d.attempts || 0) + '</td></tr>' +
+				'<tr><td class="sb-muted">HTTP status</td><td>' + esc(d.http_status || "—") + '</td></tr>' +
+				'<tr><td class="sb-muted">GI document</td><td>' + esc(d.sap_gi_document || "—") + '</td></tr>' +
+				'<tr><td class="sb-muted">Confirmed at</td><td>' + esc((d.confirmed_at || "—").slice(0, 19)) + '</td></tr>' +
+				'<tr><td class="sb-muted">Next attempt</td><td>' + esc((d.next_attempt_at || "—").slice(0, 19)) + '</td></tr>' +
+				'<tr><td class="sb-muted">Released by</td><td>' + esc(d.released_by || "—") + '</td></tr>' +
+				'<tr><td class="sb-muted">Last error</td><td>' + esc(d.last_error || "—") + '</td></tr>' +
+				'</tbody></table>' +
+				'<div class="sb-label" style="margin-top:18px;">Payload sent to SAP</div>' +
+				'<pre style="background:#f6f7f9;border-radius:8px;padding:12px;overflow:auto;font-size:12px;">' + esc(payload || "") + '</pre>'
+			);
+		}
+
+		// ---------- SAP loading (outbound T1, per coil) ----------
+		async function renderSapLoading(c) {
+			const r = defaultRange();
+			c.innerHTML = '<div class="toolbar"><input id="tl-q" placeholder="Search truck…" />' +
+				'<select id="tl-status"><option value="">All statuses</option><option>Pending</option><option>Sent</option><option>Failed</option></select>' +
+				dateControls("tl", r) + '</div><div id="tl-table"></div>';
+			const load = async () => {
+				const rows = await api("sbx_wmslite.console_api.get_coil_loading", { status: $("tl-status").value, truck: $("tl-q").value, ...rangeArgs("tl") });
+				$("tl-table").innerHTML = '<table class="grid"><thead><tr><th>Coil</th><th>Truck</th><th>Status</th><th>Pushed at</th><th>Message</th><th>Actions</th></tr></thead><tbody>' +
+					(rows.length ? rows.map(r => {
+						const actions = r.sap_loading_status === "Failed" ? '<button class="sb-btn sb-btn--orange sb-btn--inline" style="padding:7px 12px;font-size:12px;" data-retry="' + esc(r.name) + '">Retry</button>' : "";
+						return '<tr><td><b>' + esc(r.coil_barcode) + '</b></td><td>' + esc(r.truck_number || "—") +
+							'</td><td><span class="pill ' + (T1_PILL[r.sap_loading_status] || "canc") + '">' + esc(r.sap_loading_status) + '</span></td><td style="white-space:nowrap;">' + esc((r.sap_loading_pushed_at || "—").slice(0, 19)) +
+							'</td><td class="sb-muted">' + esc(r.sap_loading_message || "") + '</td><td style="white-space:nowrap;">' + actions + '</td></tr>';
+					}).join("") : '<tr><td colspan="6" class="sb-muted">No T1 loading pushes in range</td></tr>') + '</tbody></table>';
+				document.querySelectorAll("#tl-table [data-retry]").forEach(b => b.onclick = async () => {
+					try { await api("sbx_wmslite.console_api.retry_coil_loading", { coil: b.dataset.retry }); load(); } catch (e) { alert(e.message); } });
+			};
+			$("tl-q").oninput = () => { clearTimeout(window._tld); window._tld = setTimeout(load, 300); };
+			$("tl-status").onchange = load; $("tl-from").onchange = load; $("tl-to").onchange = load;
+			$("tl-clear").onclick = () => { $("tl-from").value = ""; $("tl-to").value = ""; load(); };
 			load();
 		}
 

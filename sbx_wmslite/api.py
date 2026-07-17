@@ -17,7 +17,7 @@ from frappe.utils import cint, now_datetime, today
 
 from sbx_wmslite.decode import decode_coil_id
 
-OPEN_STATES = ("Open", "In Progress", "Pending Approval")
+OPEN_STATES = ("Open", "In Progress", "Ready to Complete", "Pending Approval")
 DONE_STATES = ("Completed", "Completed (Short)")
 
 
@@ -65,6 +65,8 @@ def _plan_progress(plan):
 	return {
 		"name": plan.name,
 		"truck_number": plan.truck_number,
+		"sap_plan_id": plan.sap_plan_id,
+		"delivery_date": str(plan.delivery_date) if plan.get("delivery_date") else None,
 		"plan_status": plan.plan_status,
 		"total_coils": plan.total_coils,
 		"loaded_coils": plan.loaded_coils,
@@ -86,11 +88,13 @@ def lookup_trucks(truck_number):
 	rows = frappe.get_all(
 		"Loading Plan",
 		filters={"truck_number": ["like", f"{truck_number}%"], "plan_status": ["in", OPEN_STATES]},
-		fields=["name", "truck_number", "plan_status", "total_coils", "loaded_coils",
-				"pending_coils", "skipped_coils", "claimed_by"],
+		fields=["name", "truck_number", "sap_plan_id", "delivery_date", "plan_status", "total_coils",
+				"loaded_coils", "pending_coils", "skipped_coils", "claimed_by"],
 		order_by="received_at desc",
 		limit_page_length=25,
 	)
+	if (_settings().loading_group_mode or "By Shipment") == "By Truck":
+		return _group_by_truck(rows)
 	return rows
 
 
@@ -139,35 +143,90 @@ def get_plan(plan):
 	return out
 
 
+def _truck_key(p):
+	return (p.get("truck_number") or "", str(p.get("delivery_date") or ""))
+
+
+def _group_by_truck(plans):
+	"""Collapse per-shipment plans into truck groups (key = truck + delivery date).
+	Each group aggregates coil counts and lists its shipments."""
+	groups, order = {}, []
+	for p in plans:
+		k = _truck_key(p)
+		g = groups.get(k)
+		if not g:
+			g = {
+				"is_group": 1,
+				"truck_number": p.get("truck_number"),
+				"delivery_date": str(p["delivery_date"]) if p.get("delivery_date") else None,
+				"shipment_count": 0, "sap_plan_ids": [], "plans": [],
+				"total_coils": 0, "loaded_coils": 0, "pending_coils": 0, "skipped_coils": 0,
+				"claimed_by": None, "statuses": [], "gi_status": None,
+			}
+			groups[k] = g
+			order.append(k)
+		g["shipment_count"] += 1
+		g["plans"].append(p.get("name"))
+		if p.get("sap_plan_id"):
+			g["sap_plan_ids"].append(p.get("sap_plan_id"))
+		for f in ("total_coils", "loaded_coils", "pending_coils", "skipped_coils"):
+			g[f] += (p.get(f) or 0)
+		if p.get("claimed_by"):
+			g["claimed_by"] = p.get("claimed_by")
+		g["statuses"].append(p.get("plan_status"))
+		if p.get("gi_status") and p.get("gi_status") != "Not Required":
+			g["gi_status"] = p.get("gi_status")
+	# name = synthetic bundle id "truck|date" so the PWA can address the group
+	out = []
+	for k in order:
+		g = groups[k]
+		g["name"] = (g["truck_number"] or "") + "|" + (g["delivery_date"] or "")
+		st = set(g["statuses"])
+		if "Pending Approval" in st:
+			g["plan_status"] = "Pending Approval"
+		elif st & {"Open", "In Progress", "Ready to Complete"}:
+			g["plan_status"] = "In Progress"
+		elif st and st <= set(DONE_STATES):
+			g["plan_status"] = "Completed"
+		else:
+			g["plan_status"] = next(iter(st), "Open")
+		out.append(g)
+	return out
+
+
 @frappe.whitelist()
 def operator_home():
-	"""Landing payload for the operator PWA: pending trucks to load (FIFO),
-	trucks loaded today, and a small stats strip."""
+	"""Landing payload for the operator PWA: pending work (FIFO), completed today,
+	and a stats strip. When Loading Model = By Truck, per-shipment plans are grouped
+	into truck cards."""
+	mode = _settings().loading_group_mode or "By Shipment"
 	today0 = today() + " 00:00:00"
 	pending = frappe.get_all(
 		"Loading Plan",
 		filters={"plan_status": ["in", OPEN_STATES]},
-		fields=["name", "truck_number", "plan_status", "total_coils", "loaded_coils",
-				"pending_coils", "skipped_coils", "claimed_by", "received_at"],
+		fields=["name", "truck_number", "sap_plan_id", "delivery_date", "plan_status",
+				"total_coils", "loaded_coils", "pending_coils", "skipped_coils", "claimed_by", "received_at"],
 		order_by="received_at asc",  # oldest first = FIFO dispatch
-		limit_page_length=25,
+		limit_page_length=0,
 	)
 	loaded = frappe.get_all(
 		"Loading Plan",
 		filters={"plan_status": ["in", DONE_STATES], "completed_at": [">=", today0]},
-		fields=["name", "truck_number", "plan_status", "total_coils", "loaded_coils",
-				"skipped_coils", "gi_status", "completed_at"],
+		fields=["name", "truck_number", "sap_plan_id", "delivery_date", "plan_status", "total_coils",
+				"loaded_coils", "skipped_coils", "gi_status", "completed_at"],
 		order_by="completed_at desc",
-		limit_page_length=25,
+		limit_page_length=0,
 	)
+	if mode == "By Truck":
+		pending = _group_by_truck(pending)
+		loaded = _group_by_truck(loaded)
 	stats = {
-		"pending": frappe.db.count("Loading Plan", {"plan_status": ["in", OPEN_STATES]}),
-		"loaded_today": frappe.db.count("Loading Plan",
-			{"plan_status": ["in", DONE_STATES], "completed_at": [">=", today0]}),
+		"pending": len(pending),
+		"loaded_today": len(loaded),
 		"coils_today": frappe.db.count("Coil Load Event",
 			{"event_type": "Loaded", "event_time": [">=", today0]}),
 	}
-	return {"pending": pending, "loaded": loaded, "stats": stats}
+	return {"mode": mode, "pending": pending, "loaded": loaded, "stats": stats}
 
 
 @frappe.whitelist()
@@ -255,8 +314,14 @@ def confirm_load(plan, coil_barcode, scanned_qr=None, client_event_id=None, sync
 	row.loaded_at = now_datetime()
 	row.load_event = ev.name
 	row.skip_reason = None
+	if scanned_qr:
+		# Keep the full scanned QR on the coil so the SAP T1 push can parse
+		# plant/product/material/sized/weight out of it.
+		row.coil_qr_raw = scanned_qr
 	doc.save(ignore_permissions=True)
 	_mark_bin_picked(coil_barcode)
+	from sbx_wmslite import loading_push
+	loading_push.on_coil_loaded(doc, row)
 	frappe.db.commit()
 	return {"ok": True, "coil_barcode": coil_barcode, "event": ev.name, **_plan_progress(doc)}
 
@@ -302,6 +367,8 @@ def undo_last_load(plan, coil_barcode, client_event_id=None):
 		if age > window:
 			frappe.throw(_("Undo window ({0}s) has passed for coil {1}").format(window, coil_barcode))
 
+	from sbx_wmslite import loading_push
+	loading_push.on_coil_unloaded(row)  # cancel a not-yet-sent SAP push
 	if cint(row.unplanned):
 		# Unplanned coil added by over-scan — undo removes it entirely.
 		doc.coils.remove(row)
@@ -345,6 +412,8 @@ def overscan_add(plan, coil_barcode, scanned_qr=None, material_grade=None, weigh
 		"load_event": ev.name,
 	})
 	doc.save(ignore_permissions=True)
+	from sbx_wmslite import loading_push
+	loading_push.on_coil_loaded(doc, doc.coils[-1])
 	frappe.db.commit()
 	return {"ok": True, "event": ev.name, "unplanned": True, **_plan_progress(doc)}
 
@@ -352,6 +421,40 @@ def overscan_add(plan, coil_barcode, scanned_qr=None, material_grade=None, weigh
 # --------------------------------------------------------------------------
 # short-load: request + online PIN approval / decline
 # --------------------------------------------------------------------------
+@frappe.whitelist()
+def complete_plan(plan):
+	"""Operator presses 'Complete Loading' on a fully-loaded plan.
+
+	Only valid when nothing is pending — a short-load (finishing early with coils
+	unloaded) must go through request_short_load + supervisor approval instead.
+	Sets flags.operator_completing so the controller finalises the plan even when
+	'Auto-complete When All Coils Loaded' is off; that transition fires the SAP
+	goods-issue and releases the plan's Deferred T1 loading pushes (see
+	LoadingPlan.on_update). Idempotent: a no-op if the plan is already complete."""
+	doc = frappe.get_doc("Loading Plan", plan)
+	doc.check_permission("write")
+	if doc.plan_status in DONE_STATES:
+		return {"ok": True, "already": True, **_plan_progress(doc)}
+	if doc.plan_status == "Cancelled":
+		frappe.throw(_("Plan {0} is cancelled").format(plan))
+	if doc.plan_status == "Pending Approval":
+		frappe.throw(_("Plan {0} is awaiting short-load approval").format(plan))
+	# Recompute from the child rows so the pending guard can't be fooled by a
+	# stale stored tally.
+	doc.recompute_counts()
+	if doc.total_coils == 0:
+		frappe.throw(_("No coils on this plan"))
+	if doc.pending_coils > 0:
+		frappe.throw(_("{0} coil(s) still pending — request a short-load approval "
+					   "to finish early").format(doc.pending_coils))
+	doc.flags.operator_completing = True
+	doc.save(ignore_permissions=True)  # recompute -> Completed / Completed (Short)
+	_log_event(doc, "Completion", result="Success",
+			   reason=f"{doc.loaded_coils} loaded, {doc.skipped_coils} skipped")
+	frappe.db.commit()
+	return {"ok": True, **_plan_progress(doc)}
+
+
 @frappe.whitelist()
 def request_short_load(plan, skips):
 	"""Operator requests completion with coils still pending.
@@ -401,6 +504,10 @@ def approve_short_load(plan, pin, remarks=None):
 
 	# Force terminal status (recompute_counts leaves Pending Approval alone, so
 	# clear it first, then let the controller settle the short/complete label).
+	# operator_completing makes recompute finalise the plan even when auto-complete
+	# is off — supervisor approval IS the explicit completion here, so it must not
+	# bounce to 'Ready to Complete'.
+	doc.flags.operator_completing = True
 	doc.plan_status = "In Progress"
 	doc.approved_by = frappe.session.user
 	doc.approval_remarks = remarks
@@ -448,6 +555,10 @@ def get_client_config():
 		"bin_decode_rule": s.bin_decode_rule or "Identity",
 		"bin_decode_regex": s.bin_decode_regex,
 		"allow_pick_outside_bin": cint(s.allow_pick_outside_bin),
+		"count_enabled": cint(s.count_enabled),
+		"count_qc_default": s.count_qc_default or "OK",
+		"loading_group_mode": s.loading_group_mode or "By Shipment",
+		"completion_mode": s.completion_mode or "Whole Truck",
 	}
 
 
@@ -471,6 +582,13 @@ def submit_offline_queue(events):
 			elif etype == "reject":
 				r = log_reject(e["plan"], e.get("coil_barcode"), e.get("scanned_qr"),
 							   e.get("reason"), e.get("client_event_id"))
+			elif etype == "count_scan":
+				from sbx_wmslite import count_api
+				r = count_api.count_scan(e["bin_code"], e.get("raw_qr") or e.get("coil_barcode"),
+										 e.get("client_event_id"), e.get("qc", 0))
+			elif etype == "count_remove":
+				from sbx_wmslite import count_api
+				r = count_api.count_remove(e["bin_code"], e["coil_barcode"], e.get("client_event_id"))
 			else:
 				r = {"ok": False, "error": f"unknown event type {etype}"}
 			results.append({"client_event_id": e.get("client_event_id"), **r})

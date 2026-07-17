@@ -105,6 +105,25 @@ def _authenticate():
 		raise frappe.AuthenticationError("Invalid or missing X-WMSLite-Key")
 
 
+def _locate_plan(sap_plan_id, truck):
+	"""Find the plan this payload targets.
+
+	A shipment is identified by its sap_plan_id — when one is supplied we match
+	ONLY on it: an unknown sap_plan_id is a NEW shipment and must create its own
+	plan, never hijack another open shipment on the same truck (a truck can carry
+	several shipments/deliveries at once). The (truck, open) fallback is used only
+	for legacy payloads that omit sap_plan_id entirely.
+	"""
+	if sap_plan_id:
+		return frappe.db.get_value("Loading Plan", {"sap_plan_id": sap_plan_id}, "name")
+	if truck:
+		return frappe.db.get_value(
+			"Loading Plan",
+			{"truck_number": truck, "plan_status": ["in", ("Open", "In Progress", "Pending Approval")]},
+			"name")
+	return None
+
+
 def _duplicate_coils(coil_barcodes, exclude_plan):
 	"""Coils already Pending/Loaded on another OPEN plan → potential SAP error."""
 	if not coil_barcodes:
@@ -155,16 +174,7 @@ def receive_loading_plan():
 		frappe.local.response["http_status_code"] = 422
 		return {"ok": False, "error": "sap_plan_id or truck_number required"}
 
-	# --- locate existing plan: sap_plan_id primary, (truck, open) fallback ---
-	existing_name = None
-	if sap_plan_id:
-		existing_name = frappe.db.get_value("Loading Plan", {"sap_plan_id": sap_plan_id}, "name")
-	if not existing_name and truck:
-		existing_name = frappe.db.get_value(
-			"Loading Plan",
-			{"truck_number": truck, "plan_status": ["in", ("Open", "In Progress", "Pending Approval")]},
-			"name",
-		)
+	existing_name = _locate_plan(sap_plan_id, truck)
 
 	try:
 		if action == "cancel":

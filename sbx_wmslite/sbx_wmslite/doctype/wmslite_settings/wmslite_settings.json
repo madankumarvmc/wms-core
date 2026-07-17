@@ -15,6 +15,11 @@
   "qr_decode_regex",
   "allow_overscan",
   "undo_window_seconds",
+  "section_loading_model",
+  "loading_group_mode",
+  "completion_mode",
+  "section_completion",
+  "auto_complete_on_full_load",
   "section_approval",
   "supervisor_pin",
   "section_bin",
@@ -24,6 +29,9 @@
   "column_break_bin",
   "allow_pick_outside_bin",
   "mark_picked_on_load",
+  "section_count",
+  "count_enabled",
+  "count_qc_default",
   "section_gi",
   "gi_enabled",
   "sap_token_url",
@@ -36,7 +44,18 @@
   "sap_gi_timeout",
   "gi_max_attempts",
   "gi_auto_send_full",
-  "gi_hold_short_for_review"
+  "gi_hold_short_for_review",
+  "section_loading",
+  "loading_push_enabled",
+  "loading_push_url",
+  "loading_push_basic_user",
+  "loading_push_basic_password",
+  "column_break_loading",
+  "loading_push_user",
+  "loading_txn_type",
+  "loading_location_sep",
+  "loading_push_batch_size",
+  "loading_push_max_attempts"
  ],
  "fields": [
   {
@@ -96,6 +115,40 @@
    "label": "Undo Window (seconds)"
   },
   {
+   "fieldname": "section_loading_model",
+   "fieldtype": "Section Break",
+   "label": "Loading Model"
+  },
+  {
+   "default": "By Shipment",
+   "description": "By Shipment: one loading task per SAP shipment (a truck may show several). By Truck: all shipments for the same truck + delivery date are grouped into one loading task.",
+   "fieldname": "loading_group_mode",
+   "fieldtype": "Select",
+   "label": "Loading Task Grouping",
+   "options": "By Shipment\nBy Truck"
+  },
+  {
+   "default": "Whole Truck",
+   "depends_on": "eval:doc.loading_group_mode=='By Truck'",
+   "description": "Only applies in By Truck mode. Whole Truck: completing finalises every shipment on the truck together (each fires its own SAP goods-issue). Per Shipment: the operator completes each shipment separately within the truck task.",
+   "fieldname": "completion_mode",
+   "fieldtype": "Select",
+   "label": "Completion Mode",
+   "options": "Whole Truck\nPer Shipment"
+  },
+  {
+   "fieldname": "section_completion",
+   "fieldtype": "Section Break",
+   "label": "Loading Completion"
+  },
+  {
+   "default": "0",
+   "description": "OFF (default): a fully-loaded plan waits at 'Ready to Complete' — no SAP goods-issue (PGI/GRN) and no T1 loading pushes fire until the operator presses Complete on the handheld (or a supervisor completes it from the console). ON: the plan auto-completes and pushes the moment every coil is loaded.",
+   "fieldname": "auto_complete_on_full_load",
+   "fieldtype": "Check",
+   "label": "Auto-complete When All Coils Loaded"
+  },
+  {
    "fieldname": "section_approval",
    "fieldtype": "Section Break",
    "label": "Short-Load Approval"
@@ -149,6 +202,26 @@
    "fieldname": "mark_picked_on_load",
    "fieldtype": "Check",
    "label": "Mark Picked on Load"
+  },
+  {
+   "fieldname": "section_count",
+   "fieldtype": "Section Break",
+   "label": "Inventory Count"
+  },
+  {
+   "default": "0",
+   "description": "Enable the Inventory Count task on the HHT (bin↔coil mapping capture). Requires the Inventory Recorder role.",
+   "fieldname": "count_enabled",
+   "fieldtype": "Check",
+   "label": "Enable Inventory Count"
+  },
+  {
+   "default": "OK",
+   "description": "Default QC state applied to each counted coil (per-coil override on the handheld).",
+   "fieldname": "count_qc_default",
+   "fieldtype": "Select",
+   "label": "Default QC State",
+   "options": "OK\nQC"
   },
   {
    "fieldname": "section_gi",
@@ -226,6 +299,70 @@
    "fieldname": "gi_hold_short_for_review",
    "fieldtype": "Check",
    "label": "Hold Short-loads for Review"
+  },
+  {
+   "fieldname": "section_loading",
+   "fieldtype": "Section Break",
+   "label": "SAP Loading Transactions (outbound)"
+  },
+  {
+   "default": "0",
+   "description": "Push a transaction to SAP (zpwmsb) for each coil loaded onto a truck.",
+   "fieldname": "loading_push_enabled",
+   "fieldtype": "Check",
+   "label": "Push Loading Transactions to SAP"
+  },
+  {
+   "description": "SAP zpwmsb REST endpoint (e.g. https://<your-sap-host>/sap/bc/zpwmsb/rest).",
+   "fieldname": "loading_push_url",
+   "fieldtype": "Data",
+   "label": "SAP Loading URL"
+  },
+  {
+   "fieldname": "loading_push_basic_user",
+   "fieldtype": "Data",
+   "label": "SAP Basic-Auth User"
+  },
+  {
+   "fieldname": "loading_push_basic_password",
+   "fieldtype": "Password",
+   "label": "SAP Basic-Auth Password"
+  },
+  {
+   "fieldname": "column_break_loading",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "jindal1",
+   "description": "Value sent in the SAP USERNAME field.",
+   "fieldname": "loading_push_user",
+   "fieldtype": "Data",
+   "label": "SAP Username"
+  },
+  {
+   "default": "T1",
+   "fieldname": "loading_txn_type",
+   "fieldtype": "Data",
+   "label": "Transaction Type"
+  },
+  {
+   "default": "_",
+   "description": "Separator for LOCATION = truck_number <sep> sap_plan_id.",
+   "fieldname": "loading_location_sep",
+   "fieldtype": "Data",
+   "label": "Location Separator"
+  },
+  {
+   "default": "200",
+   "fieldname": "loading_push_batch_size",
+   "fieldtype": "Int",
+   "label": "Push Batch Size"
+  },
+  {
+   "default": "8",
+   "fieldname": "loading_push_max_attempts",
+   "fieldtype": "Int",
+   "label": "Max Push Attempts"
   }
  ],
  "index_web_pages_for_search": 1,

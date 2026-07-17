@@ -39,6 +39,8 @@ scheduler_events = {
 			# Safety net: derive Bin Inventory from any Coil Transactions the
 			# post-intake job missed (immediate derivation runs on each push).
 			"sbx_wmslite.bin_api.process_pending_transactions",
+			# Push any Pending loaded coils to SAP (immediate enqueue on load too).
+			"sbx_wmslite.loading_push.sweep",
 		],
 	}
 }
