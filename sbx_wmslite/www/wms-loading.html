@@ -16,21 +16,37 @@
 	<link rel="stylesheet" href="/assets/sbx_wmslite/css/stackbox.css" />
 	<style>
 		* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+		html { overflow-x: hidden; }
 		body { margin: 0; background: var(--sb-bg); color: var(--sb-ink);
-			font-family: var(--sb-font-body, 'Inter', sans-serif); padding-bottom: 88px; }
+			font-family: var(--sb-font-body, 'Inter', sans-serif); padding-bottom: 88px;
+			/* native-app feel: never scroll/rubber-band sideways */
+			overflow-x: hidden; overscroll-behavior-x: none; }
 		.topbar { position: sticky; top: 0; z-index: 20; background: var(--sb-card);
-			border-bottom: 1px solid var(--sb-line); padding: 10px 14px;
-			display: flex; align-items: center; gap: 10px; }
-		.topbar img.logo { height: 22px; }
+			border-bottom: 1px solid var(--sb-line); padding: 10px 12px;
+			display: flex; align-items: center; gap: 7px; max-width: 100%; }
+		.topbar .title { flex: 0 0 auto; white-space: nowrap; }   /* never shrinks — always fully visible */
+		.topbar > :not(.title):not(.spacer) { flex: 0 0 auto; }
+		.topbar img.logo { height: auto; max-height: 20px; max-width: 74px; width: auto; }
 		.topbar .title { font-family: var(--sb-font-display, 'Oswald'); text-transform: uppercase;
 			letter-spacing: .03em; font-weight: 700; font-size: 15px; }
 		.spacer { flex: 1; }
-		.net { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: var(--sb-pill);
-			text-transform: uppercase; letter-spacing: .04em; }
+		.net { font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: var(--sb-pill);
+			text-transform: uppercase; letter-spacing: .03em; white-space: nowrap; }
 		.net.on { background: var(--sb-green-bg, #e7f6ee); color: var(--sb-green, #1f9d57); }
 		.net.off { background: var(--sb-amber-bg, #fdf2e0); color: var(--sb-amber, #b9770e); }
 		.qbadge { font-size: 11px; font-weight: 700; background: var(--sb-blue-bg, #e9f1fb);
-			color: var(--sb-blue, #2f6db5); padding: 3px 9px; border-radius: var(--sb-pill); display: none; }
+			color: var(--sb-blue, #2f6db5); padding: 3px 9px; border-radius: var(--sb-pill); display: none; cursor: pointer; }
+		.q-list { margin: 12px 0 4px; }
+		.q-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 2px; border-bottom: 1px solid var(--sb-line); }
+		.q-item:last-child { border-bottom: none; }
+		.q-item.q-dead { padding-left: 10px; border-left: 3px solid #a23b2e; border-radius: 4px; }
+		.q-main { flex: 1; min-width: 0; }
+		.q-label { font-size: 14px; }
+		.q-sub { color: var(--sb-muted); font-size: 12px; margin-top: 2px; }
+		.q-err { color: var(--sb-amber, #b9770e); font-size: 12px; margin-top: 3px; }
+		.q-dead .q-err { color: #a23b2e; }
+		.q-dismiss { flex: 0 0 auto; align-self: center; font-size: 12px; font-weight: 700; padding: 7px 12px;
+			border-radius: var(--sb-pill); border: 1px solid #a23b2e; background: var(--sb-card); color: #a23b2e; cursor: pointer; }
 		.wrap { padding: 14px; max-width: 640px; margin: 0 auto; }
 		.banner { padding: 11px 14px; border-radius: var(--sb-radius-sm); font-weight: 600;
 			margin-bottom: 12px; font-size: 14px; display: none; }
@@ -89,15 +105,23 @@
 			border-radius: var(--sb-radius-sm); padding: 10px 12px; text-align: center; }
 		.home-stats .s b { display: block; font-size: 22px; font-weight: 800; line-height: 1; }
 		.home-stats .s span { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--sb-muted); }
-		.tcard { display: flex; align-items: center; gap: 10px; padding: 12px 10px 12px 14px; border: 1px solid var(--sb-line);
-			border-radius: var(--sb-radius-sm); margin-bottom: 8px; background: var(--sb-card); cursor: pointer;
+		.tcard { display: block; padding: 14px; border: 1px solid var(--sb-line);
+			border-radius: var(--sb-radius-sm); margin-bottom: 10px; background: var(--sb-card); cursor: pointer;
 			transition: background .08s ease; }
 		.tcard:active { background: var(--sb-bg); }
 		.tcard.done { border-left: 3px solid var(--sb-green, #1f9d57); }
-		.tcard .chev { color: var(--sb-muted); font-size: 20px; line-height: 1; flex: 0 0 auto; margin-left: 2px; }
-		.tcard .miniprog { height: 6px; background: var(--sb-line); border-radius: 99px; overflow: hidden; margin-top: 6px; }
+		.tc-head { display: flex; align-items: center; gap: 8px; }
+		.tc-idline { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+		.tc-truck { font-family: var(--sb-font-display, 'Oswald'); font-weight: 800; font-size: 19px; line-height: 1.1;
+			letter-spacing: .01em; white-space: nowrap; }
+		.tc-date { font-size: 12px; color: var(--sb-muted); font-weight: 600; white-space: nowrap; }
+		.tc-meta { color: var(--sb-muted); font-size: 12.5px; margin-top: 3px; }
+		.tc-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+		.tcard .chev { color: var(--sb-muted); font-size: 22px; line-height: 1; flex: 0 0 auto; align-self: center; }
+		.tcard .miniprog { height: 6px; background: var(--sb-line); border-radius: 99px; overflow: hidden; margin-top: 10px; }
 		.tcard .miniprog > i { display: block; height: 100%; background: var(--sb-orange); }
 		.empty { color: var(--sb-muted); font-size: 13px; padding: 8px 2px; }
+		.list-more { color: var(--sb-muted); font-size: 12px; text-align: center; padding: 10px 4px 2px; }
 		/* inline/compact buttons — override the global .sb-btn width:100% */
 		.sb-btn--inline { width: auto; flex: 0 0 auto; }
 		.sb-btn--sm { padding: 9px 16px; font-size: 13px; min-height: 40px; }
@@ -119,12 +143,8 @@
 		.bin-context .bx-code { font-family: var(--sb-font-display, 'Oswald'); font-size: 18px; font-weight: 800; line-height: 1.05; }
 		.bin-context .bx-loc { color: var(--sb-muted); font-size: 12px; }
 		/* task picker */
-		.switchbtn { font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: var(--sb-pill);
-			background: var(--sb-blue-bg, #e9f1fb); color: var(--sb-blue, #2f6db5); border: none; cursor: pointer;
-			text-transform: uppercase; letter-spacing: .04em; }
-		.helpbtn { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--sb-line);
-			background: var(--sb-card); color: var(--sb-muted); font-weight: 800; font-size: 13px; text-decoration: none;
-			display: inline-flex; align-items: center; justify-content: center; }
+		.switchbtn { font-size: 16px; font-weight: 700; padding: 2px 9px; border-radius: var(--sb-pill);
+			background: var(--sb-blue-bg, #e9f1fb); color: var(--sb-blue, #2f6db5); border: none; cursor: pointer; line-height: 1.3; }
 		/* shipment number(s) on the loading header */
 		.ship-line { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 		.ship-chip { font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: var(--sb-pill);
@@ -134,7 +154,6 @@
 		.ship-row { display: flex; align-items: center; gap: 10px; padding: 10px 2px; border-bottom: 1px solid var(--sb-line); }
 		.ship-row:last-child { border-bottom: none; }
 		.ship-row .sc { font-weight: 700; }
-		.tcard .badges { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 		.task-pick { display: flex; flex-direction: column; gap: 14px; margin-top: 22px; }
 		.task-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%;
 			padding: 22px 20px; border: 2px solid var(--sb-orange); border-radius: var(--sb-radius);
@@ -161,9 +180,8 @@
 	<div class="topbar">
 		<img class="logo" src="/assets/sbx_wmslite/brand/stackbox-logo.svg" alt="StackBox" />
 		<span class="title">WMS Core</span>
-		<button class="switchbtn hide" id="switch-task" title="Switch task">⇄ Task</button>
+		<button class="switchbtn hide" id="switch-task" title="Switch task" aria-label="Switch task">⇄</button>
 		<span class="spacer"></span>
-		<a class="helpbtn" href="/wms-help" target="_blank" rel="noopener" title="User manual" aria-label="Help">?</a>
 		<span class="qbadge" id="qbadge">0 queued</span>
 		<span class="net on" id="net">online</span>
 	</div>
@@ -391,22 +409,88 @@
 		// ---------- offline queue ----------
 		async function enqueue(evt) {
 			evt.client_event_id = evt.client_event_id || uuid();
+			if (!evt.queued_at) evt.queued_at = Date.now();
+			if (evt.attempts == null) evt.attempts = 0;
 			await idbPut("queue", evt);
 			await refreshQueueBadge();
 			return evt.client_event_id;
 		}
+		function queuedSorted(rows) { return rows.slice().sort((a, b) => (a.queued_at || 0) - (b.queued_at || 0)); }
+
 		async function syncQueue() {
 			if (!navigator.onLine || !DB) return;
-			const rows = await idbAll("queue");
+			const rows = queuedSorted(await idbAll("queue"));   // replay oldest-first (load before its undo)
 			if (!rows.length) return;
 			try {
 				const results = await api("sbx_wmslite.api.submit_offline_queue", { events: JSON.stringify(rows) });
+				const byId = {}; results.forEach((r) => { byId[r.client_event_id] = r; });
 				let synced = 0;
-				for (const r of results) { if (r.ok !== false) { await idbDel("queue", r.client_event_id); synced++; } }
+				for (const row of rows) {
+					const r = byId[row.client_event_id];
+					if (r && r.ok !== false) { await idbDel("queue", row.client_event_id); synced++; }
+					else if (r) {   // kept in queue — record WHY so the queue popup can show it
+						row.last_error = r.error || "Sync failed"; row.attempts = (row.attempts || 0) + 1;
+						row.last_tried = Date.now(); row.terminal = !!r.terminal;
+						await idbPut("queue", row);
+					}
+				}
 				await refreshQueueBadge();
 				if (synced) banner("✅ Synced " + synced + " offline action(s)", "pass");
+				if ($("scrim").classList.contains("show") && $("q-sync")) openQueueSheet();  // refresh popup if open
 				if (PLAN) await reloadCurrent();
 			} catch (e) { /* stay queued; will retry on next online */ }
+		}
+
+		// ---------- offline-queue detail popup (tap the "N queued" badge) ----------
+		const Q_LABELS = { confirm_load: "⬆ Load coil", overscan_add: "⬆ Over-scan add", undo: "↩ Undo load",
+			reject: "⚠ Rejected scan", count_scan: "▤ Count scan", count_remove: "✕ Count remove" };
+		function qAgo(t) {
+			if (!t) return "";
+			const s = Math.round((Date.now() - t) / 1000);
+			if (s < 60) return "just now";
+			const m = Math.round(s / 60);
+			return m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago";
+		}
+		function qTruck(e) {
+			if (PLAN && (PLAN.name === e.plan || (PLAN.shipments || []).some((s) => s.plan === e.plan))) return PLAN.truck_number;
+			return e.plan || e.bin_code || "";
+		}
+		async function openQueueSheet() {
+			const rows = queuedSorted(await idbAll("queue"));
+			const items = rows.map((e) => {
+				const label = Q_LABELS[e.type] || e.type;
+				const coil = e.coil_barcode || e.raw_qr || "";
+				const sub = [qTruck(e), qAgo(e.queued_at)].filter(Boolean).join(" · ");
+				const dead = !!e.terminal;
+				const err = e.last_error ? '<div class="q-err">' + (dead ? "⛔ Won't sync: " : "⚠ ") + esc(e.last_error) +
+					(e.attempts ? ' · ' + e.attempts + ' tries' : '') + '</div>' : '';
+				const dismiss = dead ? '<button class="q-dismiss" data-cid="' + esc(e.client_event_id) + '">Dismiss</button>' : '';
+				return '<div class="q-item' + (dead ? ' q-dead' : '') + '"><div class="q-main"><div class="q-label">' + esc(label) +
+					(coil ? ' <b>' + esc(coil) + '</b>' : '') + '</div>' + (sub ? '<div class="q-sub">' + esc(sub) + '</div>' : '') + err +
+					'</div>' + dismiss + '</div>';
+			}).join("");
+			const online = navigator.onLine;
+			openSheet(
+				'<div class="row" style="align-items:baseline;"><div style="flex:1;min-width:0;"><div class="sb-label">Offline queue</div>' +
+				'<h2 class="sb-h2" style="margin:.2em 0;">' + rows.length + ' queued action' + (rows.length === 1 ? '' : 's') + '</h2></div>' +
+				'<button class="sb-btn sb-btn--primary sb-btn--inline" id="q-sync"' + (online && rows.length ? '' : ' disabled') + '>Sync now</button></div>' +
+				(rows.length ? '<div class="q-list">' + items + '</div>' : '<div class="empty">Nothing queued — all synced ✅</div>') +
+				'<div class="hint">' + (online ? 'These sync automatically; tap Sync now to push immediately.' : 'You\'re offline — items sync automatically when you\'re back online.') + '</div>' +
+				'<button class="sb-btn sb-btn--ghost" style="width:100%;margin-top:14px;" onclick="closeSheet()">Close</button>'
+			);
+			const sb = $("q-sync");
+			if (sb) sb.onclick = async () => {
+				if (!navigator.onLine) { banner("Offline — will sync when back online", "info"); return; }
+				sb.textContent = "Syncing…"; sb.disabled = true;
+				await syncQueue();
+				if ($("scrim").classList.contains("show")) openQueueSheet();   // re-render with what's left
+			};
+			// Dismiss appears ONLY on items the server has permanently rejected (terminal).
+			$("sheet").querySelectorAll(".q-dismiss").forEach((btn) => btn.onclick = async () => {
+				await idbDel("queue", btn.dataset.cid);
+				await refreshQueueBadge();
+				openQueueSheet();
+			});
 		}
 
 		// ---------- SCREEN 1: truck lookup ----------
@@ -990,18 +1074,21 @@
 
 		function tcard(t, done, list, idx) {
 			const pct = t.total_coils ? Math.round(100 * t.loaded_coils / t.total_coils) : 0;
-			const claim = (!done && t.claimed_by) ? '<span class="chip-inuse">in use</span>' : "";
-			const shipChip = (t.is_group && t.shipment_count > 1) ? '<span class="sb-chip is-info">' + t.shipment_count + ' shipments</span>' : "";
-			const badge = done
-				? '<span class="sb-chip is-pass">' + esc(t.plan_status || "Completed") + (t.gi_status && t.gi_status !== "Not Required" ? " · GI " + esc(t.gi_status) : "") + '</span>'
-				: (t.plan_status === "Pending Approval" ? '<span class="sb-chip is-fail">awaiting approval</span>' : '<span class="sb-chip is-info">' + t.pending_coils + ' to load</span>');
-			const dd = t.delivery_date ? ' · ' + esc(t.delivery_date) : "";
+			const validDate = t.delivery_date && !/^0{4}-0{2}-0{2}/.test(t.delivery_date);
+			const dd = validDate ? '<span class="tc-date">' + esc(t.delivery_date) + '</span>' : "";
+			const pills = [];
+			if (!done && t.claimed_by) pills.push('<span class="chip-inuse">in use</span>');
+			if (t.is_group && t.shipment_count > 1) pills.push('<span class="sb-chip is-info">' + t.shipment_count + ' shipments</span>');
+			if (done) pills.push('<span class="sb-chip is-pass">' + esc(t.plan_status || "Completed") + (t.gi_status && t.gi_status !== "Not Required" ? " · GI " + esc(t.gi_status) : "") + '</span>');
+			else if (t.plan_status === "Pending Approval") pills.push('<span class="sb-chip is-fail">awaiting approval</span>');
+			else pills.push('<span class="sb-chip is-info">' + t.pending_coils + ' to load</span>');
+			const meta = t.loaded_coils + '/' + t.total_coils + ' loaded' + (t.skipped_coils ? ' · ' + t.skipped_coils + ' skipped' : '');
 			return '<div class="tcard' + (done ? ' done' : '') + '" data-list="' + list + '" data-idx="' + idx + '" data-done="' + (done ? 1 : 0) + '">' +
-				'<div style="flex:1;min-width:0;"><div style="font-weight:800;font-size:16px;">' + esc(t.truck_number) + dd + '</div>' +
-				'<div class="meta" style="color:var(--sb-muted);font-size:12px;">' + t.loaded_coils + '/' + t.total_coils + ' loaded' + (t.skipped_coils ? ' · ' + t.skipped_coils + ' skipped' : '') + '</div>' +
-				'<div class="miniprog"><i style="width:' + pct + '%"></i></div></div>' +
-				'<div class="badges">' + claim + shipChip + badge + '</div>' +
-				'<span class="chev">›</span></div>';
+				'<div class="tc-head"><div class="tc-idline"><span class="tc-truck">' + esc(t.truck_number) + '</span>' + dd + '</div>' +
+				'<span class="chev">›</span></div>' +
+				'<div class="tc-meta">' + meta + '</div>' +
+				'<div class="tc-pills">' + pills.join("") + '</div>' +
+				'<div class="miniprog"><i style="width:' + pct + '%"></i></div></div>';
 		}
 
 		function renderHome(data, staleTs) {
@@ -1013,10 +1100,18 @@
 				'<div class="s"><b>' + (s.pending || 0) + '</b><span>Pending</span></div>' +
 				'<div class="s"><b>' + (s.loaded_today || 0) + '</b><span>Loaded today</span></div>' +
 				'<div class="s"><b>' + (s.coils_today || 0) + '</b><span>Coils today</span></div>';
-			$("list-pending").innerHTML = HOME.pending.length
+			const unit = data.unit || "shipment";
+			let pendHtml = HOME.pending.length
 				? HOME.pending.map((t, i) => tcard(t, false, "pending", i)).join("") : '<div class="empty">Nothing to load 🎉</div>';
-			$("list-loaded").innerHTML = HOME.loaded.length
+			const morePend = (data.pending_total || HOME.pending.length) - HOME.pending.length;
+			if (morePend > 0) pendHtml += '<div class="list-more">Showing ' + HOME.pending.length + ' of ' + data.pending_total +
+				' ' + unit + 's — scan or search a truck to find the rest.</div>';
+			$("list-pending").innerHTML = pendHtml;
+			let loadHtml = HOME.loaded.length
 				? HOME.loaded.map((t, i) => tcard(t, true, "loaded", i)).join("") : '<div class="empty">Nothing loaded yet today</div>';
+			const moreLoad = (data.loaded_total || HOME.loaded.length) - HOME.loaded.length;
+			if (moreLoad > 0) loadHtml += '<div class="list-more">Showing latest ' + HOME.loaded.length + ' of ' + data.loaded_total + '.</div>';
+			$("list-loaded").innerHTML = loadHtml;
 			document.querySelectorAll("#screen-home .tcard").forEach((el) => el.onclick = () => {
 				const item = HOME[el.dataset.list][+el.dataset.idx];
 				const done = el.getAttribute("data-done") === "1";
@@ -1291,6 +1386,7 @@
 		autoScanWatch($("cbin-input"), handleCountBinScan);
 		autoScanWatch($("ccoil-input"), handleCountCoilScan);
 		$("cbtn-save").onclick = countFinish;
+		$("qbadge").onclick = openQueueSheet;   // tap the "N queued" badge → offline-queue detail popup
 
 		// ---------- boot ----------
 		(async function boot() {

@@ -194,39 +194,74 @@ def _group_by_truck(plans):
 	return out
 
 
+# Home lists are a "next up" preview, not a full browser — capped so the first
+# screen stays light no matter how many shipments SAP has pushed. Any truck
+# beyond the cap is still reachable via the scan/search box (lookup_trucks).
+PENDING_CAP = 40
+LOADED_CAP = 30
+GROUP_WINDOW = 300  # rows fetched to group into By-Truck cards (bounds the query)
+
+
+def _distinct_truck_count(states, since=None):
+	"""Number of distinct trucks (truck + delivery date) in the given states."""
+	cond = "plan_status IN %(s)s"
+	params = {"s": tuple(states)}
+	if since:
+		cond += " AND completed_at >= %(since)s"
+		params["since"] = since
+	return frappe.db.sql(
+		"SELECT COUNT(*) FROM (SELECT 1 FROM `tabLoading Plan` WHERE " + cond +
+		" GROUP BY truck_number, COALESCE(delivery_date, '')) t", params)[0][0]
+
+
 @frappe.whitelist()
 def operator_home():
-	"""Landing payload for the operator PWA: pending work (FIFO), completed today,
-	and a stats strip. When Loading Model = By Truck, per-shipment plans are grouped
-	into truck cards."""
+	"""Landing payload for the operator PWA: pending work (newest first, capped),
+	completed today, and a stats strip. When Loading Model = By Truck, per-shipment
+	plans are grouped into truck cards. Totals are returned so the PWA can show
+	"showing N of M — scan to find others"."""
 	mode = _settings().loading_group_mode or "By Shipment"
+	by_truck = mode == "By Truck"
 	today0 = today() + " 00:00:00"
-	pending = frappe.get_all(
+	# Newest first. In By-Truck mode fetch a larger window so a truck's shipments
+	# group together before we cap to N truck cards.
+	pending_rows = frappe.get_all(
 		"Loading Plan",
 		filters={"plan_status": ["in", OPEN_STATES]},
 		fields=["name", "truck_number", "sap_plan_id", "delivery_date", "plan_status",
 				"total_coils", "loaded_coils", "pending_coils", "skipped_coils", "claimed_by", "received_at"],
-		order_by="received_at asc",  # oldest first = FIFO dispatch
-		limit_page_length=0,
+		order_by="received_at desc",  # newest first
+		limit_page_length=(GROUP_WINDOW if by_truck else PENDING_CAP),
 	)
-	loaded = frappe.get_all(
+	loaded_rows = frappe.get_all(
 		"Loading Plan",
 		filters={"plan_status": ["in", DONE_STATES], "completed_at": [">=", today0]},
 		fields=["name", "truck_number", "sap_plan_id", "delivery_date", "plan_status", "total_coils",
 				"loaded_coils", "skipped_coils", "gi_status", "completed_at"],
 		order_by="completed_at desc",
-		limit_page_length=0,
+		limit_page_length=(GROUP_WINDOW if by_truck else LOADED_CAP),
 	)
-	if mode == "By Truck":
-		pending = _group_by_truck(pending)
-		loaded = _group_by_truck(loaded)
+	if by_truck:
+		pending = _group_by_truck(pending_rows)[:PENDING_CAP]
+		loaded = _group_by_truck(loaded_rows)[:LOADED_CAP]
+		pending_total = _distinct_truck_count(OPEN_STATES)
+		loaded_total = _distinct_truck_count(DONE_STATES, today0)
+	else:
+		pending = pending_rows[:PENDING_CAP]
+		loaded = loaded_rows[:LOADED_CAP]
+		pending_total = frappe.db.count("Loading Plan", {"plan_status": ["in", OPEN_STATES]})
+		loaded_total = frappe.db.count("Loading Plan",
+			{"plan_status": ["in", DONE_STATES], "completed_at": [">=", today0]})
+
 	stats = {
-		"pending": len(pending),
-		"loaded_today": len(loaded),
+		"pending": pending_total,
+		"loaded_today": loaded_total,
 		"coils_today": frappe.db.count("Coil Load Event",
 			{"event_type": "Loaded", "event_time": [">=", today0]}),
 	}
-	return {"mode": mode, "pending": pending, "loaded": loaded, "stats": stats}
+	return {"mode": mode, "pending": pending, "loaded": loaded,
+			"pending_total": pending_total, "loaded_total": loaded_total,
+			"unit": "truck" if by_truck else "shipment", "stats": stats}
 
 
 @frappe.whitelist()
@@ -562,9 +597,28 @@ def get_client_config():
 	}
 
 
+# Failure messages that will NEVER succeed on retry (state has moved on) — the
+# PWA offers a "Dismiss" only for these; everything else keeps retrying.
+_TERMINAL_MARKERS = ("window", "has passed", "cancelled", "not on this plan",
+					 "not currently loaded", "is disabled", "over-scan is disabled",
+					 "no coils on this plan", "not permitted")
+
+
+def _terminal_failure(ex):
+	"""True when a queued event was rejected for a reason retrying can't fix."""
+	if isinstance(ex, frappe.PermissionError):
+		return True
+	msg = str(ex).lower()
+	return any(k in msg for k in _TERMINAL_MARKERS)
+
+
 @frappe.whitelist()
 def submit_offline_queue(events):
-	"""Replay a batch of queued operator events. Each is idempotent by id."""
+	"""Replay a batch of queued operator events. Each is idempotent by id.
+
+	Each result carries `terminal: True` when the failure will never succeed on
+	retry (undo window passed, plan completed/cancelled, coil not on plan, …) so
+	the PWA can offer a Dismiss instead of retrying it forever."""
 	events = _parse(events)
 	results = []
 	for e in events:
@@ -590,9 +644,9 @@ def submit_offline_queue(events):
 				from sbx_wmslite import count_api
 				r = count_api.count_remove(e["bin_code"], e["coil_barcode"], e.get("client_event_id"))
 			else:
-				r = {"ok": False, "error": f"unknown event type {etype}"}
+				r = {"ok": False, "error": f"unknown event type {etype}", "terminal": True}
 			results.append({"client_event_id": e.get("client_event_id"), **r})
 		except Exception as ex:
 			results.append({"client_event_id": e.get("client_event_id"), "ok": False,
-							"error": str(ex)})
+							"error": str(ex), "terminal": _terminal_failure(ex)})
 	return results
