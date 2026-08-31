@@ -594,19 +594,33 @@ def get_client_config():
 		"count_qc_default": s.count_qc_default or "OK",
 		"loading_group_mode": s.loading_group_mode or "By Shipment",
 		"completion_mode": s.completion_mode or "Whole Truck",
+		"rm_enabled": cint(s.rm_enabled),
+		"rm_received_history_hours": cint(s.rm_received_history_hours) or 12,
 	}
 
 
 # Failure messages that will NEVER succeed on retry (state has moved on) — the
 # PWA offers a "Dismiss" only for these; everything else keeps retrying.
+#
+# "[rm-final]" is a sentinel that RM Movement appends to every permanent-failure
+# message (rm_api.FINAL). Matching one fixed token beats matching English prose,
+# which stops working the moment a string is translated.
+#
+# "couldn't read", "value missing" and "duplicate" were missing and mattered: an
+# undecodable barcode never becomes readable and a unique-key clash never clears,
+# yet both were classified as retryable, so a single bad queued scan would retry
+# forever with no way for the operator to clear it.
 _TERMINAL_MARKERS = ("window", "has passed", "cancelled", "not on this plan",
 					 "not currently loaded", "is disabled", "over-scan is disabled",
-					 "no coils on this plan", "not permitted")
+					 "no coils on this plan", "not permitted",
+					 "[rm-final]", "couldn't read", "value missing",
+					 "duplicate", "must be unique")
 
 
 def _terminal_failure(ex):
 	"""True when a queued event was rejected for a reason retrying can't fix."""
-	if isinstance(ex, frappe.PermissionError):
+	if isinstance(ex, (frappe.PermissionError, frappe.DoesNotExistError,
+					   frappe.UniqueValidationError, frappe.MandatoryError)):
 		return True
 	msg = str(ex).lower()
 	return any(k in msg for k in _TERMINAL_MARKERS)
@@ -643,10 +657,30 @@ def submit_offline_queue(events):
 			elif etype == "count_remove":
 				from sbx_wmslite import count_api
 				r = count_api.count_remove(e["bin_code"], e["coil_barcode"], e.get("client_event_id"))
+			elif etype == "rm_dispatch":
+				from sbx_wmslite import rm_api
+				r = rm_api.rm_dispatch(e["destination"], e.get("raw_qr") or e.get("coil_barcode"),
+									   e.get("client_event_id"), e.get("occurred_at"),
+									   synced_offline=1)
+			elif etype == "rm_receive":
+				from sbx_wmslite import rm_api
+				r = rm_api.rm_receive(e["destination"], e.get("raw_qr") or e.get("coil_barcode"),
+									  e.get("client_event_id"), e.get("occurred_at"),
+									  synced_offline=1)
+			elif etype == "rm_remove":
+				from sbx_wmslite import rm_api
+				r = rm_api.rm_remove(e["coil_barcode"], e.get("leg") or "dispatch",
+									 e.get("client_event_id"))
 			else:
 				r = {"ok": False, "error": f"unknown event type {etype}", "terminal": True}
 			results.append({"client_event_id": e.get("client_event_id"), **r})
 		except Exception as ex:
+			# Roll back before moving on. Without this, a handler that wrote rows and
+			# then threw leaves them uncommitted-but-pending in this transaction, and
+			# the NEXT event's commit() persists them — e.g. a Coil Transaction stuck
+			# at processed=0, which the derive sweep later applies as if it were feed
+			# data. Each event must fail cleanly and leave nothing behind.
+			frappe.db.rollback()
 			results.append({"client_event_id": e.get("client_event_id"), "ok": False,
 							"error": str(ex), "terminal": _terminal_failure(ex)})
 	return results

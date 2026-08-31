@@ -22,30 +22,28 @@ import frappe
 from frappe import _
 from frappe.utils import cint, now_datetime
 
-from sbx_wmslite.bin_api import upsert_bin
+from sbx_wmslite import tasks
+from sbx_wmslite.bin_api import RM_TXN_TYPES, upsert_bin
 from sbx_wmslite.decode import decode_bin_code, decode_coil_id
 
-LOADING_ROLES = {"Loading Operator", "Loading Supervisor", "System Manager"}
-COUNT_ROLES = {"Inventory Recorder", "Loading Supervisor", "System Manager"}
+# Re-exported for callers that imported them from here before the registry existed.
+LOADING_ROLES = tasks.LOADING_ROLES
+COUNT_ROLES = tasks.COUNT_ROLES
+
+# The type this module writes. count_remove only ever undoes its own scans, so it
+# whitelists rather than excluding — In-app rows always carry a type.
+COUNT_TXN_TYPE = "Inventory Count"
 
 
 # --------------------------------------------------------------------------
 # guards
 # --------------------------------------------------------------------------
 def _require_count_role():
-	if not (set(frappe.get_roles()) & COUNT_ROLES):
-		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	tasks.require(tasks.COUNT_ROLES, "count_enabled", _("Inventory Count"))
 
 
 def _count_enabled():
-	# Read fresh (not the cached Single) — a cached Single can mask a
-	# just-changed flag (see the outbound-SAP note in the app history).
-	return bool(cint(frappe.db.get_single_value("WMSLite Settings", "count_enabled")))
-
-
-def _require_count_enabled():
-	if not _count_enabled():
-		frappe.throw(_("Inventory Count is disabled"))
+	return tasks.flag_on("count_enabled")
 
 
 def _current_bin(coil):
@@ -62,16 +60,11 @@ def _current_bin(coil):
 def my_tasks():
 	"""Which HHT tasks the current user may perform (drives the task picker).
 
-	`loading` needs a loading role; `count` needs a count role AND the feature
-	flag on. Superusers (Supervisor / System Manager) get both.
+	The logic lives in `sbx_wmslite.tasks` — one table covering Loading, Inventory
+	Count and both RM Movement legs. This endpoint stays here because a handheld
+	running a cached app shell calls this exact path.
 	"""
-	roles = set(frappe.get_roles())
-	tasks = []
-	if roles & LOADING_ROLES:
-		tasks.append("loading")
-	if (roles & COUNT_ROLES) and _count_enabled():
-		tasks.append("count")
-	return {"tasks": tasks, "default": None}
+	return tasks.my_tasks()
 
 
 # --------------------------------------------------------------------------
@@ -85,7 +78,6 @@ def count_open_bin(raw_bin):
 	Bin Inventory truth. `raw_bin` is the raw scan (decoded here, server-side).
 	"""
 	_require_count_role()
-	_require_count_enabled()
 	bin_code = decode_bin_code(raw_bin)
 	if not bin_code:
 		frappe.throw(_("Couldn't read the bin barcode"))
@@ -113,7 +105,6 @@ def count_scan(bin_code, raw_qr, client_event_id=None, qc=0):
 	(`existing`).
 	"""
 	_require_count_role()
-	_require_count_enabled()
 	bin_code = (bin_code or "").strip()
 	coil = decode_coil_id(raw_qr)
 	if not bin_code:
@@ -164,7 +155,6 @@ def count_scan(bin_code, raw_qr, client_event_id=None, qc=0):
 def count_set_qc(bin_code, coil_barcode, qc):
 	"""Toggle the QC hold on a just-counted coil's Bin Inventory row."""
 	_require_count_role()
-	_require_count_enabled()
 	coil_barcode = (coil_barcode or "").strip()
 	qc = 1 if cint(qc) else 0
 	if coil_barcode and frappe.db.exists("Bin Inventory", coil_barcode):
@@ -184,15 +174,19 @@ def count_remove(bin_code, coil_barcode, client_event_id=None):
 	created in-app — SAP-fed rows are never deleted by a count undo.
 	"""
 	_require_count_role()
-	_require_count_enabled()
 	coil_barcode = (coil_barcode or "").strip()
 	bin_code = (bin_code or "").strip()
 	if not coil_barcode:
 		return {"ok": True}
+	# Both branches are scoped to transaction_type. Without it, the fallback filter
+	# (coil + bin + In-app) also matches RM Movement rows — an Inventory Recorder who
+	# counted a coil in a bin that happens to be an RM destination would silently
+	# delete that coil's RM ledger history.
 	if client_event_id:
-		filters = {"txn_key": client_event_id}
+		filters = {"txn_key": client_event_id, "transaction_type": COUNT_TXN_TYPE}
 	else:
-		filters = {"coil_barcode": coil_barcode, "bin_code": bin_code, "source": "In-app"}
+		filters = {"coil_barcode": coil_barcode, "bin_code": bin_code, "source": "In-app",
+				   "transaction_type": COUNT_TXN_TYPE}
 	rows = frappe.get_all("Coil Transaction", filters=filters,
 						  fields=["name", "raw_json"], order_by="creation asc")
 	# The location before the *earliest* removed scan — the true "before" state.
@@ -216,11 +210,21 @@ def _rederive_coil(coil, fallback_bin=None):
 	(bypassing the latest-wins guard, which would refuse to move *back*);
 	(2) else the `fallback_bin` captured from the removed scan (the coil's location
 	before it) — this is how a coil fed by SAP is safely restored; (3) else the
-	coil had no prior location at all (brand-new mis-scan) → drop the row."""
-	latest = frappe.get_all(
-		"Coil Transaction", filters={"coil_barcode": coil},
-		fields=["bin_code", "qc", "scanned_at"],
-		order_by="scanned_at desc, creation desc", limit_page_length=1)
+	coil had no prior location at all (brand-new mis-scan) → drop the row.
+
+	RM Movement rows are excluded: they carry no bin_code, and step (1) writes
+	`bin_code` unconditionally, so an unscoped query could pick an RM row as
+	"latest" and blank a mandatory field. The exclusion is raw SQL with COALESCE
+	because the SAP feed leaves transaction_type NULL and `NULL NOT IN (...)` is
+	NULL in SQL — a plain NOT IN would drop every feed row and lose the location
+	history this function exists to restore."""
+	latest = frappe.db.sql("""
+		SELECT bin_code, qc, scanned_at
+		FROM `tabCoil Transaction`
+		WHERE coil_barcode = %(coil)s
+		  AND COALESCE(transaction_type, '') NOT IN %(rm)s
+		ORDER BY scanned_at DESC, creation DESC
+		LIMIT 1""", {"coil": coil, "rm": RM_TXN_TYPES}, as_dict=True)
 	if latest:
 		t = latest[0]
 		if frappe.db.exists("Bin Inventory", coil):
@@ -252,7 +256,6 @@ def count_finish(bin_code):
 	immediate derivation was missed, and returns the bin's current coil count.
 	"""
 	_require_count_role()
-	_require_count_enabled()
 	frappe.enqueue("sbx_wmslite.bin_api.process_pending_transactions",
 				   queue="short", enqueue_after_commit=True)
 	bin_code = (bin_code or "").strip()

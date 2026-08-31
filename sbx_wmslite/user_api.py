@@ -27,7 +27,12 @@ from frappe.utils import cint, validate_email_address
 
 MANAGER = "WMS Manager"
 # Roles a WMS Manager may grant/revoke. MANAGER is intentionally absent.
-ASSIGNABLE_ROLES = ("Loading Operator", "Loading Supervisor", "Inventory Recorder")
+# Every operational role MUST be listed here. A role that is missing is not just
+# ungrantable: _assert_manageable() rejects any user holding a role outside
+# WMS_ROLES, so an operator carrying it would become unmanageable — no password
+# reset, no disable — even for a WMS Manager who created them.
+ASSIGNABLE_ROLES = ("Loading Operator", "Loading Supervisor", "Inventory Recorder",
+					"RM Gate Operator", "RM Line Operator")
 # The full WMS role set — a user holding only these is "ours" (manageable here).
 WMS_ROLES = ASSIGNABLE_ROLES + (MANAGER,)
 # Implicit/benign Frappe roles that don't make a user "foreign".

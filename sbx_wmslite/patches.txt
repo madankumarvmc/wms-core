@@ -8,3 +8,4 @@ sbx_wmslite.patches.v2_loading_model
 sbx_wmslite.patches.v3_wms_manager
 sbx_wmslite.patches.v4_workspace
 sbx_wmslite.patches.v5_bin_code_index
+sbx_wmslite.patches.v6_rm_movement

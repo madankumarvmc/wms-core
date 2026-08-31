@@ -32,6 +32,10 @@
   "section_count",
   "count_enabled",
   "count_qc_default",
+  "section_rm",
+  "rm_enabled",
+  "rm_received_history_hours",
+  "rm_unknown_bin",
   "section_gi",
   "gi_enabled",
   "sap_token_url",
@@ -222,6 +226,32 @@
    "fieldtype": "Select",
    "label": "Default QC State",
    "options": "OK\nQC"
+  },
+  {
+   "fieldname": "section_rm",
+   "fieldtype": "Section Break",
+   "label": "RM Movement (gate -> line)"
+  },
+  {
+   "default": "0",
+   "description": "Enable the RM Movement tasks on the HHT: Gate Dispatch (scan a destination line, then coils) and Line Receipt (scan against the expected list). Requires the RM Gate Operator / RM Line Operator roles.",
+   "fieldname": "rm_enabled",
+   "fieldtype": "Check",
+   "label": "Enable RM Movement"
+  },
+  {
+   "default": "12",
+   "description": "How much recently-received history the line screen shows below the expected list, in hours.",
+   "fieldname": "rm_received_history_hours",
+   "fieldtype": "Int",
+   "label": "Received History (hours)"
+  },
+  {
+   "default": "UNKNOWN",
+   "description": "Bin Code given to a brand-new coil first seen at the gate. Bin Code is mandatory, so a coil with no inventory row needs a placeholder; its scanned_at is left blank so the first real feed or count scan overrides this.",
+   "fieldname": "rm_unknown_bin",
+   "fieldtype": "Data",
+   "label": "Placeholder Bin for Unknown Coils"
   },
   {
    "fieldname": "section_gi",

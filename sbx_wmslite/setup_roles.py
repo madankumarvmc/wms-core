@@ -1,12 +1,16 @@
 """Create the WMSLite roles and grant their permissions.
 
-Four roles:
+Six roles:
   * 'Loading Operator'   — field/bay users: look up trucks + scan/confirm coils.
   * 'Loading Supervisor' — back-office console users: import, approve short-loads,
     cancel/reopen plans, manage the doctypes (NOT full System Manager).
   * 'Inventory Recorder' — HHT users who capture the bin<->coil mapping via the
     Inventory Count task (scan bin, scan coils). Writes Coil Transaction /
     Bin Inventory only; no loading rights.
+  * 'RM Gate Operator'   — HHT users at the plant gate: scan a destination line,
+    then each raw-material coil, sending them In Transit to Line.
+  * 'RM Line Operator'   — HHT users at a production line: scan the coils they
+    were sent against the expected list, marking them Received.
   * 'WMS Manager'        — onboards WMS users from the console's Users view
     (create user, assign the three roles above, enable/disable, reset password)
     plus full console access. Deliberately CANNOT mint other WMS Managers —
@@ -25,7 +29,18 @@ import frappe
 OPERATOR = "Loading Operator"
 SUPERVISOR = "Loading Supervisor"
 INVENTORY = "Inventory Recorder"
+RM_GATE = "RM Gate Operator"
+RM_LINE = "RM Line Operator"
 MANAGER = "WMS Manager"
+
+# The two RM roles need exactly what the Inventory Recorder needs: they are
+# producers of Coil Transaction rows that carry RM state on Bin Inventory. No
+# Loading Plan / Coil Load Event access.
+_RM_PERMS = {
+	"Coil Transaction": {"read": 1, "write": 1, "create": 1},
+	"Bin Inventory": {"read": 1, "write": 1},
+	"WMSLite Settings": {"read": 1},
+}
 
 # Full manage rights for the console — but not System Manager.
 _MANAGE = {"read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1, "print": 1}
@@ -55,6 +70,8 @@ ROLE_PERMS = {
 		"Bin Inventory": {"read": 1, "write": 1},
 		"WMSLite Settings": {"read": 1},
 	},
+	RM_GATE: _RM_PERMS,
+	RM_LINE: _RM_PERMS,
 	MANAGER: {
 		# Full console access (same operational rights as a supervisor). User
 		# administration itself is NOT a DocType permission — it runs through

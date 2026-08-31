@@ -26,6 +26,12 @@
   "column_break_2",
   "processed_at",
   "bin_inventory",
+  "rm_destination",
+  "rm_cycle",
+  "section_reversal",
+  "reversed",
+  "reversed_by",
+  "reversed_at",
   "section_raw",
   "raw_json"
  ],
@@ -104,7 +110,9 @@
   {
    "fieldname": "transaction_type",
    "fieldtype": "Data",
-   "label": "Transaction Type"
+   "in_standard_filter": 1,
+   "label": "Transaction Type",
+   "search_index": 1
   },
   {
    "fieldname": "username",
@@ -142,6 +150,52 @@
    "fieldtype": "Link",
    "label": "Bin Inventory Row",
    "options": "Bin Inventory",
+   "read_only": 1
+  },
+  {
+   "description": "RM Movement only: the destination line this scan concerns. Kept in its own column (not bin_code) because an RM row is NOT a statement about where the coil physically is — bin_code stays blank so nothing can derive a location from it.",
+   "fieldname": "rm_destination",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "RM Destination",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "default": "0",
+   "description": "RM Movement only: which movement of this coil the scan belongs to. Ties a receipt to its dispatch, so a coil's second trip is never confused with its first.",
+   "fieldname": "rm_cycle",
+   "fieldtype": "Int",
+   "label": "RM Cycle",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_reversal",
+   "fieldtype": "Section Break",
+   "label": "Reversal"
+  },
+  {
+   "default": "0",
+   "description": "Set when an operator undid this scan. The row is NEVER deleted: deleting it would free the unique Txn Key and let an offline replay re-insert an event the operator explicitly undid.",
+   "fieldname": "reversed",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Reversed",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "reversed_by",
+   "fieldtype": "Link",
+   "label": "Reversed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reversed_at",
+   "fieldtype": "Datetime",
+   "label": "Reversed At",
    "read_only": 1
   },
   {
@@ -189,6 +243,18 @@
    "create": 1,
    "read": 1,
    "role": "Inventory Recorder",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "RM Gate Operator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "RM Line Operator",
    "write": 1
   }
  ],
