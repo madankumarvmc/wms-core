@@ -36,6 +36,15 @@
 		.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
 		.toolbar input, .toolbar select { padding: 8px 10px; border: 1px solid var(--sb-line); border-radius: var(--sb-radius-sm); }
 		.sb-btn--inline { width: auto; flex: 0 0 auto; }
+		/* segmented toggle (By Bin / By Coil, transaction source) */
+		.seg { display: inline-flex; border: 1px solid var(--sb-line); border-radius: var(--sb-radius-sm); overflow: hidden; }
+		.seg button { border: 0; background: var(--sb-card); padding: 8px 14px; font-size: 13px; cursor: pointer;
+			border-right: 1px solid var(--sb-line); font-family: inherit; }
+		.seg button:last-child { border-right: 0; }
+		.seg button.on { background: var(--sb-orange); color: #fff; font-weight: 600; }
+		/* pager under the big tables */
+		.pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+		.pager button[disabled] { opacity: .4; cursor: not-allowed; }
 	</style>
 </head>
 <body class="sb-body">
@@ -47,7 +56,10 @@
 			<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;opacity:.6;margin-bottom:8px;">WMS Core</div>
 			<nav id="nav"></nav>
 			<a href="/wms-help" target="_blank" rel="noopener" style="display:block;margin-top:14px;padding:9px 12px;border-radius:8px;color:#fff;text-decoration:none;opacity:.7;font-size:13px;">? Help / Manual</a>
-			<div style="position:absolute;bottom:16px;font-size:12px;opacity:.6;">{{ full_name }}</div>
+			<div class="foot">
+				<div style="font-size:12px;opacity:.6;padding:0 12px 6px;">{{ full_name }}</div>
+				<button class="logout" id="logout" type="button">Sign out</button>
+			</div>
 		</aside>
 		<main style="padding:24px 28px;width:100%;min-width:0;">
 			<h1 class="sb-display" id="view-title" style="margin:0 0 18px;">Dashboard</h1>
@@ -62,7 +74,9 @@
 		const CSRF = "{{ csrf_token }}";
 		window.WMS_CSRF = CSRF; // exposed for E2E seeding helpers
 		const $ = (id) => document.getElementById(id);
-		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["confirmations", "SAP Confirmations"], ["saploading", "SAP Loading"], ["saplog", "SAP Log"], ["import", "Import"]];
+		const CAN_USERS = {{ can_manage_users or 0 }};   // WMS Manager / System Manager
+		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["transactions", "Scan Transactions"], ["confirmations", "SAP Confirmations"], ["saploading", "SAP Loading"], ["saplog", "SAP Log"], ["import", "Import"]]
+			.concat(CAN_USERS ? [["users", "Users"]] : []);
 		const GI_PILL = { "Confirmed": "done", "Pending": "open", "Held": "appr", "Sending": "prog", "Failed (Retryable)": "prog", "Failed (Business)": "canc", "Exhausted": "canc", "Not Required": "canc" };
 		const T1_PILL = { "Sent": "done", "Pending": "open", "Failed": "canc", "Not Required": "canc" };
 		let state = { view: "dashboard" };
@@ -94,6 +108,53 @@
 		}
 		const rangeArgs = (p) => ({ date_from: $(p + "-from").value || null, date_to: $(p + "-to").value || null });
 
+		// ---- Excel export ----
+		// The server re-runs the same query the screen ran (minus the on-screen page
+		// limit), so the file always matches the filters that are showing.
+		function apiUrl(method, args) {
+			const p = new URLSearchParams();
+			Object.keys(args || {}).forEach((k) => {
+				const v = args[k];
+				if (v !== null && v !== undefined && v !== "") p.append(k, v);
+			});
+			const qs = p.toString();
+			return "/api/method/" + method + (qs ? "?" + qs : "");
+		}
+		const exportUrl = (view, args) => apiUrl("sbx_wmslite.console_api.export_view", Object.assign({ view: view }, args || {}));
+		const exportBtn = (id) => '<button class="sb-btn sb-btn--ghost sb-btn--inline" id="' + id +
+			'" title="Download these rows as an Excel file" style="padding:6px 10px;font-size:12px;">\u2b07 Excel</button>';
+
+		// Fetched as a blob rather than navigated to: a server-side error on a plain
+		// link would replace the whole console with Frappe's error page.
+		async function downloadExport(btn, url) {
+			const label = btn.textContent;
+			btn.disabled = true; btn.textContent = "Preparing\u2026";
+			try {
+				const res = await fetch(url, { headers: { "X-Frappe-CSRF-Token": CSRF } });
+				const ctype = res.headers.get("Content-Type") || "";
+				if (!res.ok || ctype.indexOf("json") >= 0) {
+					let m = "Export failed (" + res.status + ")";
+					try { const j = await res.json(); m = (j._server_messages ? JSON.parse(j._server_messages).map(x => JSON.parse(x).message).join("\n") : (j.message || j.exception)) || m; } catch (e) { }
+					throw new Error(m);
+				}
+				const blob = await res.blob();
+				const cd = res.headers.get("Content-Disposition") || "";
+				const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+				const a = document.createElement("a");
+				a.href = URL.createObjectURL(blob);
+				a.download = m ? decodeURIComponent(m[1]) : "wmslite_export.xlsx";
+				document.body.appendChild(a); a.click(); a.remove();
+				setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+			} catch (e) { alert(e.message || "Export failed"); }
+			finally { btn.disabled = false; btn.textContent = label; }
+		}
+		// The URL is built at click time, not render time, so the file follows the
+		// filters as they stand when the button is pressed.
+		function onExport(id, urlFn) {
+			const b = $(id);
+			if (b) b.onclick = () => downloadExport(b, urlFn());
+		}
+
 		function renderNav() {
 			$("nav").innerHTML = VIEWS.map(([k, label]) =>
 				'<a class="nav-item" data-v="' + k + '" style="display:block;padding:9px 12px;border-radius:8px;color:#fff;text-decoration:none;margin-bottom:3px;' +
@@ -112,6 +173,8 @@
 				if (state.view === "saploading") return renderSapLoading(c);
 				if (state.view === "saplog") return renderSapLog(c);
 				if (state.view === "import") return renderImport(c);
+				if (state.view === "transactions") return renderTransactions(c);
+				if (state.view === "users") return renderUsers(c);
 			} catch (e) { c.innerHTML = '<p style="color:#a23b2e;">' + esc(e.message) + '</p>'; }
 		}
 
@@ -119,11 +182,16 @@
 		async function renderDashboard(c) {
 			const r = state.dashRange || defaultRange();
 			c.innerHTML =
-				'<div class="toolbar">' + dateControls("db", r) + '</div>' +
+				'<div class="toolbar">' + dateControls("db", r) + '<span style="flex:1;"></span>' + exportBtn("db-x") + '</div>' +
 				'<div class="sb-label" style="margin:2px 0 6px;">Now</div>' +
 				'<div class="kpis" id="db-live"></div>' +
 				'<div class="sb-label" style="margin:16px 0 6px;">Throughput <span id="db-range" class="sb-muted" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>' +
 				'<div class="kpis" id="db-thru"></div>' +
+				'<div class="sb-label" style="margin:16px 0 6px;">Inventory on hand</div>' +
+				'<div class="kpis" id="db-inv"></div>' +
+				'<div class="sb-label" style="margin:16px 0 6px;">Scan activity <span id="db-range2" class="sb-muted" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>' +
+				'<div class="kpis" id="db-scans"></div>' +
+				'<div id="db-scanfoot" class="sb-muted" style="font-size:12px;margin-top:6px;"></div>' +
 				'<div class="sb-card" id="db-overall" style="padding:18px;margin-top:18px;"></div>';
 			const load = async () => {
 				const ra = rangeArgs("db");
@@ -132,19 +200,58 @@
 				$("db-live").innerHTML =
 					kpi(d.live.open, "Open / Active", true) + kpi(d.live.pending_approval, "Awaiting Approval") +
 					kpi(d.live.gi_awaiting_release, "GI Awaiting Release") + kpi(d.live.gi_failed, "GI Failed");
-				$("db-range").textContent = (ra.date_from && ra.date_to) ? ("· " + ra.date_from + " → " + ra.date_to) : "· all time";
+				const rangeLabel = (ra.date_from && ra.date_to) ? ("· " + ra.date_from + " → " + ra.date_to) : "· all time";
+				$("db-range").textContent = rangeLabel;
+				$("db-range2").textContent = rangeLabel;
 				$("db-thru").innerHTML =
 					kpi(d.throughput.completed, "Completed") + kpi(d.throughput.coils_loaded, "Coils Loaded") + kpi(d.throughput.rejects, "Rejects");
+				// inventory is deliberately NOT range-scoped — stock on hand is "now"
+				$("db-inv").innerHTML =
+					kpi(fmt(d.inventory.coils), "Coils in Stock", true) + kpi(fmt(d.inventory.bins), "Bins Occupied") +
+					kpi(fmt(Math.round(d.inventory.weight)), "Total Weight") + kpi(fmt(d.inventory.picked), "Picked");
+				$("db-scans").innerHTML =
+					kpi(fmt(d.scans.total), "Scans") + kpi(fmt(d.scans.sap_feed), "From SAP Feed") +
+					kpi(fmt(d.scans.in_app), "Inventory Count") + kpi(fmt(d.scans.coils), "Coils Touched");
+				$("db-scanfoot").innerHTML =
+					(d.scans.last_scan ? "Last scan " + esc(d.scans.last_scan.slice(0, 19)) : "No scans in range") +
+					(d.scans.unprocessed ? ' · <b style="color:#a23b2e;">' + d.scans.unprocessed + ' unprocessed</b> — open Transactions to derive them' : " · all scans derived");
 				$("db-overall").innerHTML =
 					'<div class="sb-label">Overall coil progress' + ((ra.date_from && ra.date_to) ? " (plans received in range)" : "") + '</div>' +
 					'<div class="bar"><i style="width:' + d.coils.progress_pct + '%"></i></div>' +
 					'<p class="sb-muted" style="margin-top:8px;">' + d.coils.loaded + ' loaded · ' + d.coils.skipped + ' skipped · ' + d.coils.pending + ' pending</p>';
 			};
 			$("db-from").onchange = load; $("db-to").onchange = load;
+			onExport("db-x", () => apiUrl("sbx_wmslite.console_api.export_dashboard", rangeArgs("db")));
 			$("db-clear").onclick = () => { $("db-from").value = ""; $("db-to").value = ""; load(); };
 			load();
 		}
 		const kpi = (n, l, accent) => '<div class="kpi' + (accent ? " accent" : "") + '"><div class="n">' + esc(n) + '</div><div class="l">' + esc(l) + '</div></div>';
+		// 53130 -> "53,130". These views deal in tens of thousands; raw digits are unreadable.
+		const fmt = (n) => (n === null || n === undefined || n === "") ? "0" : Number(n).toLocaleString("en-IN");
+
+		// Placeholder while a query is in flight, so stale rows are never mistaken
+		// for the new filter's result.
+		function busy(tableId, pagerId) {
+			const t = $(tableId); if (t) t.innerHTML = '<p class="sb-muted" style="padding:14px 0;">Loading…</p>';
+			const p = pagerId && $(pagerId); if (p) p.innerHTML = "";
+		}
+
+		// ---------- shared pager ----------
+		// Server-side paging for the big tables (53k coils / 260k transactions).
+		// Renders "showing X-Y of Z" + Prev/Next; onGo(newStart) reloads that page.
+		function pager(id, d, onGo) {
+			const start = d.start || 0, limit = d.limit || 50, total = d.total || 0;
+			const from = total ? start + 1 : 0, to = Math.min(start + limit, total);
+			const el = $(id);
+			if (!el) return;
+			el.innerHTML =
+				'<span class="sb-muted" style="font-size:13px;">Showing ' + fmt(from) + '–' + fmt(to) + ' of ' + fmt(total) + '</span>' +
+				'<span style="flex:1;"></span>' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" id="' + id + '-prev"' + (start <= 0 ? " disabled" : "") + '>‹ Prev</button>' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" id="' + id + '-next"' + (to >= total ? " disabled" : "") + '>Next ›</button>';
+			$(id + "-prev").onclick = () => onGo(Math.max(0, start - limit));
+			$(id + "-next").onclick = () => onGo(start + limit);
+		}
 
 		// ---------- trucks ----------
 		async function renderTrucks(c) {
@@ -153,7 +260,8 @@
 				'<div class="toolbar"><input id="t-q" placeholder="Search truck…" />' +
 				'<select id="t-status"><option value="">All statuses</option>' +
 				['Open', 'In Progress', 'Pending Approval', 'Completed', 'Completed (Short)', 'Cancelled'].map(s => '<option>' + s + '</option>').join("") +
-				'</select>' + dateControls("t", r) + '</div><div id="t-table"></div>';
+				'</select>' + dateControls("t", r) + '<span style="flex:1;"></span>' + exportBtn("t-x") +
+				'</div><div id="t-table"></div>';
 			const load = async () => {
 				const rows = await api("sbx_wmslite.console_api.get_trucks", { q: $("t-q").value, status: $("t-status").value, ...rangeArgs("t") });
 				$("t-table").innerHTML = '<table class="grid"><thead><tr><th>Truck</th><th>Status</th><th>GI</th><th>Source</th><th>Loaded</th><th>Pending</th><th>Total</th><th>Claimed</th></tr></thead><tbody>' +
@@ -164,6 +272,7 @@
 					).join("") : '<tr><td colspan="8" class="sb-muted">No trucks</td></tr>') + '</tbody></table>';
 				document.querySelectorAll("#t-table tr.click").forEach(tr => tr.onclick = () => truckDrawer(tr.dataset.p));
 			};
+			onExport("t-x", () => exportUrl("trucks", { q: $("t-q").value, status: $("t-status").value, ...rangeArgs("t") }));
 			$("t-q").oninput = () => { clearTimeout(window._td); window._td = setTimeout(load, 300); };
 			$("t-status").onchange = load;
 			$("t-from").onchange = load; $("t-to").onchange = load;
@@ -180,6 +289,7 @@
 				'<div class="row" style="display:flex;gap:8px;margin:12px 0;">' +
 				(p.plan_status === "Ready to Complete" ? '<button class="sb-btn sb-btn--primary sb-btn--inline" id="d-complete">Complete loading</button>' : '') +
 				(p.plan_status !== "Cancelled" ? '<button class="sb-btn sb-btn--ghost sb-btn--inline" id="d-cancel">Cancel plan</button>' : '<button class="sb-btn sb-btn--ghost sb-btn--inline" id="d-reopen">Reopen</button>') +
+				exportBtn("d-x") +
 				'</div>' +
 				'<div class="sb-label" style="margin-top:8px;">Coils (' + p.loaded_coils + '/' + p.total_coils + ' loaded)</div>' +
 				'<table class="grid"><thead><tr><th>Coil</th><th>Status</th><th>Grade</th><th>By</th><th>SAP T1</th></tr></thead><tbody>' +
@@ -198,6 +308,7 @@
 					'</td><td>' + esc(e.coil_barcode || "") + '</td><td>' + esc(e.operator || e.approver || "") + '</td><td class="sb-muted">' + esc(e.reason || "") + '</td></tr>').join("") +
 				'</tbody></table>'
 			);
+			onExport("d-x", () => exportUrl("truck_detail", { plan: plan }));
 			const okb = $("d-complete"); if (okb) okb.onclick = async () => { if (confirm("Complete loading for this truck? This fires the SAP goods-issue and T1 pushes.")) { try { await api("sbx_wmslite.console_api.complete_plan", { plan }); closeDrawer(); render(); } catch (e) { alert(e.message); } } };
 			const cb = $("d-cancel"); if (cb) cb.onclick = async () => { if (confirm("Cancel this plan?")) { await api("sbx_wmslite.console_api.cancel_plan", { plan }); closeDrawer(); render(); } };
 			const rb = $("d-reopen"); if (rb) rb.onclick = async () => { await api("sbx_wmslite.console_api.cancel_plan", { plan, reopen: 1 }); closeDrawer(); render(); };
@@ -208,7 +319,8 @@
 		// ---------- SAP confirmations (outbound GI) ----------
 		async function renderConfirmations(c) {
 			const r = defaultRange();
-			c.innerHTML = '<div class="toolbar">' + dateControls("cf", r) + '</div><div id="cf-table"></div>';
+			c.innerHTML = '<div class="toolbar">' + dateControls("cf", r) + '<span style="flex:1;"></span>' + exportBtn("cf-x") +
+				'</div><div id="cf-table"></div>';
 			const load = async () => {
 				const rows = await api("sbx_wmslite.console_api.get_confirmations", rangeArgs("cf"));
 				$("cf-table").innerHTML = '<table class="grid"><thead><tr><th>Truck</th><th>Type</th><th>Status</th><th>Attempts</th><th>GI Doc</th><th>Last error</th><th>Actions</th></tr></thead><tbody>' +
@@ -228,6 +340,7 @@
 					try { await api("sbx_wmslite.console_api.retry_confirmation", { name: b.dataset.retry }); load(); } catch (e) { alert(e.message); } });
 				document.querySelectorAll("#cf-table tr.click").forEach(tr => tr.onclick = () => confDrawer(tr.dataset.cf));
 			};
+			onExport("cf-x", () => exportUrl("confirmations", rangeArgs("cf")));
 			$("cf-from").onchange = load; $("cf-to").onchange = load;
 			$("cf-clear").onclick = () => { $("cf-from").value = ""; $("cf-to").value = ""; load(); };
 			load();
@@ -259,7 +372,7 @@
 			const r = defaultRange();
 			c.innerHTML = '<div class="toolbar"><input id="tl-q" placeholder="Search truck…" />' +
 				'<select id="tl-status"><option value="">All statuses</option><option>Pending</option><option>Sent</option><option>Failed</option></select>' +
-				dateControls("tl", r) + '</div><div id="tl-table"></div>';
+				dateControls("tl", r) + '<span style="flex:1;"></span>' + exportBtn("tl-x") + '</div><div id="tl-table"></div>';
 			const load = async () => {
 				const rows = await api("sbx_wmslite.console_api.get_coil_loading", { status: $("tl-status").value, truck: $("tl-q").value, ...rangeArgs("tl") });
 				$("tl-table").innerHTML = '<table class="grid"><thead><tr><th>Coil</th><th>Truck</th><th>Status</th><th>Pushed at</th><th>Message</th><th>Actions</th></tr></thead><tbody>' +
@@ -272,6 +385,7 @@
 				document.querySelectorAll("#tl-table [data-retry]").forEach(b => b.onclick = async () => {
 					try { await api("sbx_wmslite.console_api.retry_coil_loading", { coil: b.dataset.retry }); load(); } catch (e) { alert(e.message); } });
 			};
+			onExport("tl-x", () => exportUrl("saploading", { status: $("tl-status").value, truck: $("tl-q").value, ...rangeArgs("tl") }));
 			$("tl-q").oninput = () => { clearTimeout(window._tld); window._tld = setTimeout(load, 300); };
 			$("tl-status").onchange = load; $("tl-from").onchange = load; $("tl-to").onchange = load;
 			$("tl-clear").onclick = () => { $("tl-from").value = ""; $("tl-to").value = ""; load(); };
@@ -283,7 +397,7 @@
 			const r = defaultRange();
 			c.innerHTML = '<div class="toolbar">' +
 				'<select id="sl-dir"><option value="">All directions</option><option>Inbound</option><option>Outbound</option></select>' +
-				dateControls("sl", r) + '</div><div id="sl-table"></div>';
+				dateControls("sl", r) + '<span style="flex:1;"></span>' + exportBtn("sl-x") + '</div><div id="sl-table"></div>';
 			const load = async () => {
 				const rows = await api("sbx_wmslite.console_api.get_sap_log", { direction: $("sl-dir").value, ...rangeArgs("sl") });
 				$("sl-table").innerHTML = '<table class="grid"><thead><tr><th>Time</th><th>Dir</th><th>Action</th><th>Result</th><th>Truck</th><th>Plan ID</th><th>Message</th><th>IP</th></tr></thead><tbody>' +
@@ -292,6 +406,7 @@
 						'</td><td class="sb-muted">' + esc(r.message || "") + '</td><td class="sb-muted">' + esc(r.source_ip || "") + '</td></tr>').join("") :
 						'<tr><td colspan="8" class="sb-muted">No SAP calls in range</td></tr>') + '</tbody></table>';
 			};
+			onExport("sl-x", () => exportUrl("saplog", { direction: $("sl-dir").value, ...rangeArgs("sl") }));
 			$("sl-dir").onchange = load; $("sl-from").onchange = load; $("sl-to").onchange = load;
 			$("sl-clear").onclick = () => { $("sl-from").value = ""; $("sl-to").value = ""; load(); };
 			load();
@@ -300,22 +415,174 @@
 		// ---------- import wizard ----------
 		let imp = {};
 		// ---------- Bin Inventory display ----------
+		// Two modes: "bin" (rollup, default — 760 bins beats 53k coils) and "coil".
+		// q/status live in state so switching mode keeps what you already typed.
+		let INV = { mode: "bin", start: 0, q: "", status: "" };
 		async function renderInventory(c) {
-			c.innerHTML = '<div class="toolbar"><input id="bi-q" placeholder="Search coil or bin…" />' +
+			c.innerHTML = '<div class="toolbar">' +
+				'<div class="seg" id="bi-seg">' +
+				'<button data-mode="bin" class="' + (INV.mode === "bin" ? "on" : "") + '">By Bin</button>' +
+				'<button data-mode="coil" class="' + (INV.mode === "coil" ? "on" : "") + '">By Coil</button></div>' +
+				'<input id="bi-q" placeholder="Coil or bin starts with…" value="' + esc(INV.q) + '" />' +
 				'<select id="bi-status"><option value="">All statuses</option><option>Available</option><option>Picked</option><option>Blocked</option></select>' +
-				'<span id="bi-count" class="sb-muted" style="font-size:13px;"></span></div><div id="bi-table"></div>';
-			const load = async () => {
-				const d = await api("sbx_wmslite.console_api.get_bin_inventory", { q: $("bi-q").value, status: $("bi-status").value });
-				$("bi-count").textContent = d.total + " coil(s) in inventory";
-				$("bi-table").innerHTML = '<table class="grid"><thead><tr><th>Bin</th><th>Coil</th><th>Grade</th><th>Weight</th><th>Zone/Aisle</th><th>Status</th><th>Source</th><th>Updated</th></tr></thead><tbody>' +
-					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td>' + esc(r.coil_barcode) + '</td><td>' + esc(r.material_grade || "") +
-						'</td><td>' + (r.weight || "") + '</td><td>' + esc([r.zone, r.aisle].filter(Boolean).join(" / ")) + '</td><td>' + esc(r.status || "") +
-						'</td><td class="sb-muted">' + esc(r.source || "") + '</td><td class="sb-muted">' + esc((r.updated_at || "").slice(0, 19)) + '</td></tr>').join("") :
-						'<tr><td colspan="8" class="sb-muted">No bin inventory yet — push it or import via the Import tab.</td></tr>') + '</tbody></table>';
+				'<span style="flex:1;"></span>' + exportBtn("bi-x") +
+				'</div><div id="bi-table"></div><div class="pager" id="bi-pg"></div>';
+			$("bi-status").value = INV.status;
+
+			let seq = 0;   // drop a stale response that lands after a newer one
+			const loadBins = async () => {
+				const mine = ++seq;
+				busy("bi-table", "bi-pg");
+				const d = await api("sbx_wmslite.console_api.get_bin_rollup", { q: $("bi-q").value, start: INV.start });
+				if (mine !== seq) return;
+				$("bi-table").innerHTML = '<table class="grid"><thead><tr><th>Bin</th><th>Coils</th><th>Weight</th><th>Picked</th><th>Last Updated</th><th></th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td>' + fmt(r.coils) + '</td><td>' + fmt(Math.round(r.weight || 0)) +
+						'</td><td>' + fmt(r.picked || 0) + '</td><td class="sb-muted">' + esc((r.last_updated || "").slice(0, 19)) +
+						'</td><td><button class="sb-btn sb-btn--ghost sb-btn--inline" data-bin="' + esc(r.bin_code) + '">View coils</button></td></tr>').join("") :
+						'<tr><td colspan="6" class="sb-muted">No bin inventory yet — push it or import via the Import tab.</td></tr>') + '</tbody></table>';
+				pager("bi-pg", d, (s) => { INV.start = s; loadBins(); });
+				$("bi-table").querySelectorAll("button[data-bin]").forEach(b => { b.onclick = () => binDrawer(b.dataset.bin); });
 			};
-			$("bi-q").oninput = () => { clearTimeout(window._bid); window._bid = setTimeout(load, 300); };
-			$("bi-status").onchange = load;
+
+			const loadCoils = async () => {
+				const mine = ++seq;
+				busy("bi-table", "bi-pg");
+				const d = await api("sbx_wmslite.console_api.get_bin_inventory",
+					{ q: $("bi-q").value, status: $("bi-status").value, start: INV.start });
+				if (mine !== seq) return;
+				$("bi-table").innerHTML = '<table class="grid"><thead><tr><th>Bin</th><th>Coil</th><th>Grade</th><th>Weight</th><th>Status</th><th>Source</th><th>Updated</th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td>' + esc(r.coil_barcode) + '</td><td>' + esc(r.material_grade || "") +
+						'</td><td>' + (r.weight || "") + '</td><td>' + esc(r.status || "") +
+						'</td><td class="sb-muted">' + esc(r.source || "") + '</td><td class="sb-muted">' + esc((r.updated_at || "").slice(0, 19)) + '</td></tr>').join("") :
+						'<tr><td colspan="7" class="sb-muted">No coils match.</td></tr>') + '</tbody></table>';
+				pager("bi-pg", d, (s) => { INV.start = s; loadCoils(); });
+			};
+
+			const load = () => (INV.mode === "bin" ? loadBins() : loadCoils());
+			$("bi-seg").querySelectorAll("button").forEach(b => {
+				b.onclick = () => { INV.mode = b.dataset.mode; INV.start = 0; renderInventory(c); };
+			});
+			// status only applies to coil rows; hide it on the rollup to avoid a dead control
+			$("bi-status").style.display = INV.mode === "coil" ? "" : "none";
+			// exports whichever mode is on screen — rollup rows or coil rows
+			onExport("bi-x", () => exportUrl(INV.mode === "bin" ? "inventory_bin" : "inventory_coil",
+				{ q: $("bi-q").value, status: INV.mode === "coil" ? $("bi-status").value : "" }));
+			$("bi-q").oninput = () => { clearTimeout(window._bid); window._bid = setTimeout(() => { INV.q = $("bi-q").value; INV.start = 0; load(); }, 300); };
+			$("bi-status").onchange = () => { INV.status = $("bi-status").value; INV.start = 0; load(); };
 			load();
+		}
+
+		// ---------- scan transactions (the append-only Coil Transaction feed) ----------
+		// 260k+ rows shared by two very different populations, so the source toggle
+		// is the primary control: "SAP Feed" vs "Inventory Count" answer different questions.
+		// q/date range live in state: switching the source toggle re-renders the
+		// toolbar, and rebuilding it from defaultRange() would silently throw away
+		// the range and search the user had already set.
+		let TXN = { source: "", start: 0, unprocessed: 0, q: "", range: null };
+		async function renderTransactions(c) {
+			const r = TXN.range || defaultRange();
+			c.innerHTML = '<div class="toolbar">' +
+				'<div class="seg" id="tx-seg">' +
+				'<button data-src="" class="' + (TXN.source === "" ? "on" : "") + '">All</button>' +
+				'<button data-src="Push API" class="' + (TXN.source === "Push API" ? "on" : "") + '">SAP Feed</button>' +
+				'<button data-src="In-app" class="' + (TXN.source === "In-app" ? "on" : "") + '">Inventory Count</button>' +
+				'</div>' +
+				'<input id="tx-q" placeholder="Coil or bin starts with…" value="' + esc(TXN.q) + '" />' +
+				dateControls("tx", r) +
+				'<label class="sb-muted" style="font-size:13px;display:flex;gap:6px;align-items:center;">' +
+				'<input type="checkbox" id="tx-unproc"' + (TXN.unprocessed ? " checked" : "") + ' /> Unprocessed only</label>' +
+				'<span style="flex:1;"></span>' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" id="tx-reproc">Reprocess pending</button>' +
+				exportBtn("tx-x") +
+				'</div>' +
+				'<div class="kpis" id="tx-kpis" style="margin-bottom:14px;"></div>' +
+				'<div id="tx-table"></div><div class="pager" id="tx-pg"></div>';
+
+			// Guards against a slow "All time" aggregate (~2s over 260k rows) leaving
+			// the previous result on screen — that reads as "the filter did nothing".
+			// The seq check also drops a stale response that lands after a newer one.
+			let seq = 0;
+			const load = async () => {
+				const mine = ++seq;
+				const ra = rangeArgs("tx");
+				busy("tx-table", "tx-pg");
+				const d = await api("sbx_wmslite.console_api.get_coil_transactions", Object.assign({
+					q: $("tx-q").value, source: TXN.source, start: TXN.start,
+					unprocessed: $("tx-unproc").checked ? 1 : 0,
+				}, ra));
+				if (mine !== seq) return;   // a newer request already answered
+				$("tx-kpis").innerHTML =
+					kpi(fmt(d.stats.total), "Scans in Range", true) + kpi(fmt(d.stats.sap_feed), "From SAP Feed") +
+					kpi(fmt(d.stats.in_app), "Inventory Count") + kpi(fmt(d.stats.unprocessed), "Unprocessed");
+				$("tx-table").innerHTML = '<table class="grid"><thead><tr><th>Scanned At</th><th>Coil</th><th>Bin</th><th>Type</th><th>Source</th><th>By</th><th>Weight</th><th>QC</th><th></th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr class="click" data-txn="' + esc(r.name) + '">' +
+						'<td>' + esc((r.scanned_at || "").slice(0, 19)) + '</td><td><b>' + esc(r.coil_barcode || "") + '</b></td>' +
+						'<td>' + esc(r.bin_code || "—") + '</td><td>' + esc(r.transaction_type || "—") + '</td>' +
+						'<td class="sb-muted">' + esc(r.source || "") + '</td><td class="sb-muted">' + esc(r.username || "—") + '</td>' +
+						'<td>' + (r.weight || "") + '</td><td>' + esc(r.qc || "—") + '</td>' +
+						'<td class="sb-muted">' + (r.processed ? "" : "pending") + '</td></tr>').join("") :
+						'<tr><td colspan="9" class="sb-muted">No scans in this range. Widen the dates or clear the filters.</td></tr>') + '</tbody></table>';
+				pager("tx-pg", d, (s) => { TXN.start = s; load(); });
+				$("tx-table").querySelectorAll("tr[data-txn]").forEach(tr => { tr.onclick = () => txnDrawer(tr.dataset.txn); });
+			};
+
+			$("tx-seg").querySelectorAll("button").forEach(b => {
+				b.onclick = () => { TXN.source = b.dataset.src; TXN.start = 0; renderTransactions(c); };
+			});
+			onExport("tx-x", () => exportUrl("transactions", Object.assign({
+				q: $("tx-q").value, source: TXN.source,
+				unprocessed: $("tx-unproc").checked ? 1 : 0,
+			}, rangeArgs("tx"))));
+			const keepRange = () => { TXN.range = { from: $("tx-from").value, to: $("tx-to").value }; };
+			$("tx-q").oninput = () => { clearTimeout(window._txd); window._txd = setTimeout(() => { TXN.q = $("tx-q").value; TXN.start = 0; load(); }, 300); };
+			$("tx-from").onchange = () => { keepRange(); TXN.start = 0; load(); };
+			$("tx-to").onchange = () => { keepRange(); TXN.start = 0; load(); };
+			$("tx-clear").onclick = () => { $("tx-from").value = ""; $("tx-to").value = ""; keepRange(); TXN.start = 0; load(); };
+			$("tx-unproc").onchange = () => { TXN.unprocessed = $("tx-unproc").checked ? 1 : 0; TXN.start = 0; load(); };
+			$("tx-reproc").onclick = async () => {
+				const b = $("tx-reproc"); b.disabled = true; b.textContent = "Deriving…";
+				try {
+					const r = await api("sbx_wmslite.console_api.reprocess_transactions");
+					alert(r.processed ? ("Derived " + r.processed + " scan(s) into Bin Inventory; " + r.remaining + " still pending.")
+									  : "Nothing pending — every scan is already derived.");
+				} catch (e) { alert(e.message); }
+				finally { b.disabled = false; b.textContent = "Reprocess pending"; load(); }
+			};
+			load();
+		}
+
+		async function txnDrawer(name) {
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">Scan</h2><p class="sb-muted">Loading…</p>');
+			const d = await api("sbx_wmslite.console_api.get_transaction_detail", { name: name });
+			const row = (l, v) => '<tr><td class="sb-muted" style="width:150px;">' + esc(l) + '</td><td>' + esc(v === null || v === undefined || v === "" ? "—" : v) + '</td></tr>';
+			let raw = d.raw_json || "";
+			try { raw = JSON.stringify(JSON.parse(raw), null, 2); } catch (e) { /* not JSON — show as-is */ }
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">' + esc(d.coil_barcode || "Scan") + '</h2>' +
+				'<p class="sb-muted">' + esc((d.scanned_at || "").slice(0, 19)) + ' · ' + esc(d.source || "") + '</p>' +
+				'<table class="grid" style="margin-top:12px;"><tbody>' +
+				row("Bin", d.bin_code) + row("Type", d.transaction_type) + row("Scanned by", d.username) +
+				row("Weight", d.weight) + row("Grade", d.material_grade) + row("QC", d.qc) +
+				row("Plant / Product", [d.plant, d.product].filter(Boolean).join(" / ")) +
+				row("Derived", d.processed ? ("yes · " + String(d.processed_at || "").slice(0, 19)) : "not yet") +
+				row("Bin Inventory", d.bin_inventory) + row("Idempotency key", d.txn_key) +
+				'</tbody></table>' +
+				(raw ? '<div class="sb-label" style="margin:16px 0 6px;">Raw payload</div>' +
+					'<pre style="background:#f5f5f6;border:1px solid var(--sb-line);border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:320px;">' + esc(raw) + '</pre>' : "") +
+				'<div class="row" style="display:flex;gap:8px;margin-top:18px;"><button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Close</button></div>');
+		}
+
+		async function binDrawer(bin) {
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">' + esc(bin) + '</h2><p class="sb-muted">Loading coils…</p>');
+			const d = await api("sbx_wmslite.console_api.get_bin_inventory", { bin_code: bin, limit: 200 });
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">' + esc(bin) + '</h2>' +
+				'<p class="sb-muted">' + fmt(d.total) + ' coil(s) in this bin</p>' +
+				'<table class="grid" style="margin-top:12px;"><thead><tr><th>Coil</th><th>Grade</th><th>Weight</th><th>Zone/Aisle</th><th>Status</th><th>Updated</th></tr></thead><tbody>' +
+				d.rows.map(r => '<tr><td><b>' + esc(r.coil_barcode) + '</b></td><td>' + esc(r.material_grade || "") + '</td><td>' + (r.weight || "") +
+					'</td><td>' + esc([r.zone, r.aisle].filter(Boolean).join(" / ") || "—") + '</td><td>' + esc(r.status || "") +
+					'</td><td class="sb-muted">' + esc((r.updated_at || "").slice(0, 19)) + '</td></tr>').join("") +
+				'</tbody></table>' +
+				(d.total > d.rows.length ? '<p class="sb-muted" style="margin-top:10px;">Showing first ' + d.rows.length + ' — search the bin in By Coil for the rest.</p>' : "") +
+				'<div class="row" style="display:flex;gap:8px;margin-top:18px;"><button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Close</button></div>');
 		}
 
 		const IMPORT_DATASETS = ["Loading Plan", "Bin Inventory"];
@@ -378,9 +645,144 @@
 			} else { setTimeout(poll, 1500); }
 		}
 
+		// ---------- users (WMS Manager) ----------
+		let U = { assignable: [], is_sm: 0 };
+		async function renderUsers(c) {
+			c.innerHTML = '<div class="toolbar"><input id="u-q" placeholder="Search name or login…" />' +
+				'<span class="spacer" style="flex:1;"></span>' +
+				'<button class="sb-btn sb-btn--primary sb-btn--inline" id="u-add">+ Add user</button></div>' +
+				'<div id="u-table"></div>';
+			const load = async () => {
+				const d = await api("sbx_wmslite.user_api.list_wms_users");
+				U = { assignable: d.assignable_roles || [], is_sm: d.is_system_manager };
+				const q = ($("u-q").value || "").toLowerCase();
+				const rows = (d.users || []).filter((u) => !q ||
+					(u.full_name || "").toLowerCase().includes(q) || u.name.toLowerCase().includes(q));
+				$("u-table").innerHTML = '<table class="grid"><thead><tr><th>User</th><th>Login</th><th>Roles</th>' +
+					'<th>Status</th><th>Last active</th><th>Actions</th></tr></thead><tbody>' +
+					(rows.length ? rows.map((u) => {
+						const roles = (u.roles || []).map((r) => '<span class="pill open" style="margin-right:4px;">' + esc(r) + '</span>').join("") ||
+							'<span class="sb-muted">none</span>';
+						const other = (u.other_roles || []).length
+							? '<div class="sb-muted" style="font-size:11px;margin-top:3px;">+ ' + esc(u.other_roles.join(", ")) + '</div>' : '';
+						const status = u.enabled
+							? '<span class="pill done">Active</span>' : '<span class="pill canc">Disabled</span>';
+						const actions = u.manageable
+							? '<button class="sb-btn sb-btn--ghost sb-btn--inline" style="padding:5px 10px;font-size:11px;" data-roles="' + esc(u.name) + '">Roles</button> ' +
+							  '<button class="sb-btn sb-btn--ghost sb-btn--inline" style="padding:5px 10px;font-size:11px;" data-pwd="' + esc(u.name) + '">Password</button> ' +
+							  '<button class="sb-btn ' + (u.enabled ? 'sb-btn--orange' : 'sb-btn--primary') + ' sb-btn--inline" style="padding:5px 10px;font-size:11px;" data-en="' + esc(u.name) + '" data-to="' + (u.enabled ? 0 : 1) + '">' + (u.enabled ? 'Disable' : 'Enable') + '</button>'
+							: '<span class="sb-muted" style="font-size:11px;">🔒 ' + esc(u.locked_reason || "Locked") + '</span>';
+						return '<tr><td><b>' + esc(u.full_name) + '</b>' + other + '</td><td class="sb-muted">' + esc(u.name) + '</td>' +
+							'<td>' + roles + '</td><td>' + status + '</td>' +
+							'<td class="sb-muted" style="white-space:nowrap;">' + esc((u.last_active || "—").slice(0, 16)) + '</td>' +
+							'<td style="white-space:nowrap;">' + actions + '</td></tr>';
+					}).join("") : '<tr><td colspan="6" class="sb-muted">No WMS users yet — use “Add user”.</td></tr>') +
+					'</tbody></table>';
+				document.querySelectorAll("#u-table [data-roles]").forEach((b) => b.onclick = () => rolesDrawer(b.dataset.roles, rows.find((x) => x.name === b.dataset.roles)));
+				document.querySelectorAll("#u-table [data-pwd]").forEach((b) => b.onclick = () => passwordDrawer(b.dataset.pwd));
+				document.querySelectorAll("#u-table [data-en]").forEach((b) => b.onclick = async () => {
+					const to = b.dataset.to === "1";
+					if (!confirm((to ? "Enable " : "Disable ") + b.dataset.en + "?")) return;
+					try { await api("sbx_wmslite.user_api.set_user_enabled", { user: b.dataset.en, enabled: to ? 1 : 0 }); load(); }
+					catch (e) { alert(e.message); }
+				});
+			};
+			$("u-q").oninput = () => { clearTimeout(window._uq); window._uq = setTimeout(load, 250); };
+			$("u-add").onclick = () => addUserDrawer(load);
+			window._uReload = load;
+			load();
+		}
+
+		function roleChecks(selected) {
+			const sel = new Set(selected || []);
+			return U.assignable.map((r) =>
+				'<label style="display:flex;gap:8px;align-items:center;margin:7px 0;font-size:14px;">' +
+				'<input type="checkbox" data-role="' + esc(r) + '"' + (sel.has(r) ? " checked" : "") + ' /> ' + esc(r) + '</label>').join("");
+		}
+		const pickedRoles = () => Array.from(document.querySelectorAll("#drawer input[data-role]:checked")).map((i) => i.dataset.role);
+
+		function addUserDrawer(onDone) {
+			openDrawer(
+				'<h2 class="sb-h1" style="margin:0 0 4px;">Add WMS user</h2>' +
+				'<p class="sb-muted">Creates a login for a warehouse user and assigns their roles.</p>' +
+				'<div style="display:grid;gap:10px;max-width:420px;margin-top:14px;">' +
+				'<label style="font-size:12px;color:var(--sb-muted);">First name *<input id="nu-first" class="sb-input" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<label style="font-size:12px;color:var(--sb-muted);">Last name<input id="nu-last" class="sb-input" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<label style="font-size:12px;color:var(--sb-muted);">Login ID *<input id="nu-id" class="sb-input" placeholder="operator1@wms.local" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<div class="sb-muted" style="font-size:11px;margin-top:-6px;">Workers without email can use a made-up ID like <b>operator1@wms.local</b> — no email is sent.</div>' +
+				'<label style="font-size:12px;color:var(--sb-muted);">Mobile<input id="nu-mob" class="sb-input" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<label style="font-size:12px;color:var(--sb-muted);">Initial password *<input id="nu-pwd" type="password" class="sb-input" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<div class="sb-muted" style="font-size:11px;margin-top:-6px;">Share this with the worker — they can change it after logging in.</div>' +
+				'<div><div class="sb-label" style="margin:6px 0 2px;">Roles *</div>' + roleChecks([]) + '</div>' +
+				'</div>' +
+				'<div class="row" style="display:flex;gap:8px;margin-top:18px;">' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Cancel</button>' +
+				'<button class="sb-btn sb-btn--primary sb-btn--inline" id="nu-save">Create user</button></div>' +
+				'<div id="nu-msg" style="margin-top:10px;"></div>'
+			);
+			$("nu-save").onclick = async () => {
+				const btn = $("nu-save"); btn.disabled = true; btn.textContent = "Creating…";
+				try {
+					const r = await api("sbx_wmslite.user_api.create_wms_user", {
+						user_id: $("nu-id").value, first_name: $("nu-first").value, last_name: $("nu-last").value,
+						mobile_no: $("nu-mob").value, password: $("nu-pwd").value, roles: JSON.stringify(pickedRoles()),
+					});
+					closeDrawer(); if (onDone) onDone();
+				} catch (e) {
+					$("nu-msg").innerHTML = '<div style="color:#a23b2e;font-size:13px;">' + esc(e.message) + '</div>';
+					btn.disabled = false; btn.textContent = "Create user";
+				}
+			};
+		}
+
+		function rolesDrawer(user, row) {
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">Roles</h2><p class="sb-muted">' + esc(user) + '</p>' +
+				'<div style="margin-top:12px;max-width:420px;">' + roleChecks((row && row.roles) || []) + '</div>' +
+				'<div class="row" style="display:flex;gap:8px;margin-top:18px;">' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Cancel</button>' +
+				'<button class="sb-btn sb-btn--primary sb-btn--inline" id="ur-save">Save roles</button></div>' +
+				'<div id="ur-msg" style="margin-top:10px;"></div>');
+			$("ur-save").onclick = async () => {
+				try { await api("sbx_wmslite.user_api.set_user_roles", { user: user, roles: JSON.stringify(pickedRoles()) });
+					closeDrawer(); if (window._uReload) window._uReload(); }
+				catch (e) { $("ur-msg").innerHTML = '<div style="color:#a23b2e;font-size:13px;">' + esc(e.message) + '</div>'; }
+			};
+		}
+
+		function passwordDrawer(user) {
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">Reset password</h2><p class="sb-muted">' + esc(user) + '</p>' +
+				'<label style="font-size:12px;color:var(--sb-muted);display:block;margin-top:14px;max-width:420px;">New password' +
+				'<input id="up-pwd" type="password" class="sb-input" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<div class="sb-muted" style="font-size:11px;margin-top:6px;">Share the new password with the user.</div>' +
+				'<div class="row" style="display:flex;gap:8px;margin-top:18px;">' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Cancel</button>' +
+				'<button class="sb-btn sb-btn--primary sb-btn--inline" id="up-save">Set password</button></div>' +
+				'<div id="up-msg" style="margin-top:10px;"></div>');
+			$("up-save").onclick = async () => {
+				try { await api("sbx_wmslite.user_api.reset_user_password", { user: user, password: $("up-pwd").value });
+					closeDrawer(); if (window._uReload) window._uReload(); }
+				catch (e) { $("up-msg").innerHTML = '<div style="color:#a23b2e;font-size:13px;">' + esc(e.message) + '</div>'; }
+			};
+		}
+
 		// ---------- drawer ----------
 		function openDrawer(html) { $("drawer").innerHTML = html; $("drawer").classList.add("show"); $("scrim2").classList.add("show"); }
 		function closeDrawer() { $("drawer").classList.remove("show"); $("scrim2").classList.remove("show"); }
+
+		// ---------- sign out ----------
+		// Frappe's built-in logout clears the session cookie; we send the CSRF token
+		// because it is a state-changing POST. Redirect regardless of the outcome —
+		// a failed call must not leave the user stuck on a console they can't use.
+		$("logout").onclick = async () => {
+			if (!confirm("Sign out of the WMS Core console?")) return;
+			try {
+				await fetch("/api/method/logout", {
+					method: "POST", credentials: "same-origin",
+					headers: { "X-Frappe-CSRF-Token": CSRF },
+				});
+			} catch (e) { /* offline or server error — redirect anyway */ }
+			window.location.href = "/login";
+		};
 
 		renderNav(); render();
 	</script>

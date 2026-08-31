@@ -1,7 +1,7 @@
 {
  "charts": [],
- "content": "[{\"id\":\"h1\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>SBX WMSLite</b></span>\",\"col\":12}},{\"id\":\"sc1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Loading Plans\",\"col\":3}},{\"id\":\"sc5\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Bin Inventory\",\"col\":3}},{\"id\":\"sc6\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Coil Transactions\",\"col\":3}},{\"id\":\"sc2\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"SAP Confirmations\",\"col\":3}},{\"id\":\"sc3\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"SAP Log\",\"col\":3}},{\"id\":\"sc4\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Settings\",\"col\":3}},{\"id\":\"sp1\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"h2\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h6\\\"><b>All DocTypes</b></span>\",\"col\":12}},{\"id\":\"card1\",\"type\":\"card\",\"data\":{\"card_name\":\"WMSLite DocTypes\",\"col\":6}}]",
- "creation": "2026-06-27 18:12:17.678887",
+ "content": "[{\"id\": \"h1\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>SBX WMSLite</b></span>\", \"col\": 12}}, {\"id\": \"sc1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Open Loading Plans\", \"col\": 4}}, {\"id\": \"sc2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Count Scans\", \"col\": 4}}, {\"id\": \"sc3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bin Inventory\", \"col\": 4}}, {\"id\": \"sc4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SAP Loading Pending\", \"col\": 4}}, {\"id\": \"sc5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SAP Log\", \"col\": 4}}, {\"id\": \"sc6\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Settings\", \"col\": 4}}, {\"id\": \"sp1\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"h2\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h6\\\"><b>All DocTypes</b></span>\", \"col\": 12}}, {\"id\": \"card1\", \"type\": \"card\", \"data\": {\"card_name\": \"Loading\", \"col\": 3}}, {\"id\": \"card2\", \"type\": \"card\", \"data\": {\"card_name\": \"Inventory Count\", \"col\": 3}}, {\"id\": \"card3\", \"type\": \"card\", \"data\": {\"card_name\": \"SAP Integration\", \"col\": 3}}, {\"id\": \"card4\", \"type\": \"card\", \"data\": {\"card_name\": \"Setup\", \"col\": 3}}]",
+ "creation": "2026-08-14 19:15:34.447816",
  "custom_blocks": [],
  "docstatus": 0,
  "doctype": "Workspace",
@@ -15,13 +15,14 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "WMSLite DocTypes",
-   "link_count": 9,
+   "label": "Loading",
+   "link_count": 3,
+   "link_type": "DocType",
    "onboard": 0,
    "type": "Card Break"
   },
   {
-   "dependencies": "",
+   "description": "Shipments pushed by SAP; one plan per shipment",
    "hidden": 0,
    "is_query_report": 0,
    "label": "Loading Plan",
@@ -32,18 +33,7 @@
    "type": "Link"
   },
   {
-   "dependencies": "",
-   "hidden": 0,
-   "is_query_report": 0,
-   "label": "Loading Plan Coil",
-   "link_count": 0,
-   "link_to": "Loading Plan Coil",
-   "link_type": "DocType",
-   "onboard": 0,
-   "type": "Link"
-  },
-  {
-   "dependencies": "",
+   "description": "Immutable audit of every scan/load/undo",
    "hidden": 0,
    "is_query_report": 0,
    "label": "Coil Load Event",
@@ -54,29 +44,7 @@
    "type": "Link"
   },
   {
-   "dependencies": "",
-   "hidden": 0,
-   "is_query_report": 0,
-   "label": "Coil Transaction",
-   "link_count": 0,
-   "link_to": "Coil Transaction",
-   "link_type": "DocType",
-   "onboard": 0,
-   "type": "Link"
-  },
-  {
-   "dependencies": "",
-   "hidden": 0,
-   "is_query_report": 0,
-   "label": "Bin Inventory",
-   "link_count": 0,
-   "link_to": "Bin Inventory",
-   "link_type": "DocType",
-   "onboard": 0,
-   "type": "Link"
-  },
-  {
-   "dependencies": "",
+   "description": "Upload-fallback plan imports",
    "hidden": 0,
    "is_query_report": 0,
    "label": "Import Batch",
@@ -87,7 +55,47 @@
    "type": "Link"
   },
   {
-   "dependencies": "",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Inventory Count",
+   "link_count": 2,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "description": "Append-only scans. Count rows: transaction_type = Inventory Count (source In-app); the rest come from the SAP push feed",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Coil Transaction",
+   "link_count": 0,
+   "link_to": "Coil Transaction",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "description": "Derived current bin per coil (latest scan wins) - shared by Inventory Count and the SAP feed",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Bin Inventory",
+   "link_count": 0,
+   "link_to": "Bin Inventory",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "SAP Integration",
+   "link_count": 3,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "description": "Outbound goods-issue confirmations",
    "hidden": 0,
    "is_query_report": 0,
    "label": "WMSLite SAP Confirmation",
@@ -98,7 +106,18 @@
    "type": "Link"
   },
   {
-   "dependencies": "",
+   "description": "Per-coil T1 loading transactions pushed to SAP",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "WMSLite SAP Loading",
+   "link_count": 0,
+   "link_to": "WMSLite SAP Loading",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "description": "Every inbound/outbound SAP exchange",
    "hidden": 0,
    "is_query_report": 0,
    "label": "WMSLite SAP Log",
@@ -109,7 +128,16 @@
    "type": "Link"
   },
   {
-   "dependencies": "",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Setup",
+   "link_count": 1,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "description": "Feature flags, decode rules, SAP endpoints and credentials",
    "hidden": 0,
    "is_query_report": 0,
    "label": "WMSLite Settings",
@@ -120,7 +148,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-06-22 00:00:01",
+ "modified": "2026-08-14 19:18:08.302176",
  "modified_by": "Administrator",
  "module": "SBX WMSLite",
  "name": "SBX WMSLite",
@@ -135,35 +163,38 @@
  "shortcuts": [
   {
    "color": "Orange",
-   "doc_view": "List",
-   "label": "Loading Plans",
+   "doc_view": "",
+   "label": "Open Loading Plans",
    "link_to": "Loading Plan",
+   "stats_filter": "{\"plan_status\": [\"in\", [\"Open\", \"In Progress\", \"Pending Approval\"]]}",
    "type": "DocType"
   },
   {
-   "color": "Yellow",
-   "doc_view": "List",
+   "color": "Green",
+   "doc_view": "",
+   "label": "Count Scans",
+   "link_to": "Coil Transaction",
+   "stats_filter": "{\"transaction_type\": \"Inventory Count\"}",
+   "type": "DocType"
+  },
+  {
+   "color": "Blue",
+   "doc_view": "",
    "label": "Bin Inventory",
    "link_to": "Bin Inventory",
    "type": "DocType"
   },
   {
-   "color": "Pink",
-   "doc_view": "List",
-   "label": "Coil Transactions",
-   "link_to": "Coil Transaction",
+   "color": "Red",
+   "doc_view": "",
+   "label": "SAP Loading Pending",
+   "link_to": "WMSLite SAP Loading",
+   "stats_filter": "{\"status\": \"Pending\"}",
    "type": "DocType"
   },
   {
-   "color": "Green",
-   "doc_view": "List",
-   "label": "SAP Confirmations",
-   "link_to": "WMSLite SAP Confirmation",
-   "type": "DocType"
-  },
-  {
-   "color": "Blue",
-   "doc_view": "List",
+   "color": "Grey",
+   "doc_view": "",
    "label": "SAP Log",
    "link_to": "WMSLite SAP Log",
    "type": "DocType"

@@ -1,12 +1,16 @@
 """Create the WMSLite roles and grant their permissions.
 
-Three roles:
+Four roles:
   * 'Loading Operator'   — field/bay users: look up trucks + scan/confirm coils.
   * 'Loading Supervisor' — back-office console users: import, approve short-loads,
     cancel/reopen plans, manage the doctypes (NOT full System Manager).
   * 'Inventory Recorder' — HHT users who capture the bin<->coil mapping via the
     Inventory Count task (scan bin, scan coils). Writes Coil Transaction /
     Bin Inventory only; no loading rights.
+  * 'WMS Manager'        — onboards WMS users from the console's Users view
+    (create user, assign the three roles above, enable/disable, reset password)
+    plus full console access. Deliberately CANNOT mint other WMS Managers —
+    only a System Manager can (see user_api.ASSIGNABLE_ROLES).
 
 Run:
     bench --site <site> console
@@ -21,6 +25,7 @@ import frappe
 OPERATOR = "Loading Operator"
 SUPERVISOR = "Loading Supervisor"
 INVENTORY = "Inventory Recorder"
+MANAGER = "WMS Manager"
 
 # Full manage rights for the console — but not System Manager.
 _MANAGE = {"read": 1, "write": 1, "create": 1, "delete": 1, "export": 1, "report": 1, "print": 1}
@@ -49,6 +54,22 @@ ROLE_PERMS = {
 		"Coil Transaction": {"read": 1, "write": 1, "create": 1},
 		"Bin Inventory": {"read": 1, "write": 1},
 		"WMSLite Settings": {"read": 1},
+	},
+	MANAGER: {
+		# Full console access (same operational rights as a supervisor). User
+		# administration itself is NOT a DocType permission — it runs through
+		# user_api's own guards, which cap what a manager may grant.
+		"Loading Plan": _MANAGE,
+		"Coil Load Event": _MANAGE,
+		"Import Batch": _MANAGE,
+		"WMSLite SAP Confirmation": _MANAGE,
+		# These two grant Loading Supervisor via their own DocType JSON, so the
+		# manager has to be added here or it loses Desk access the supervisor has.
+		"WMSLite SAP Loading": _MANAGE,
+		"WMSLite SAP Log": _MANAGE,
+		"Bin Inventory": _MANAGE,
+		"Coil Transaction": _MANAGE,
+		"WMSLite Settings": {"read": 1, "write": 1},
 	},
 }
 

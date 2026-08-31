@@ -5,3 +5,6 @@
 # Patches added in this section will be executed after doctypes are migrated
 sbx_wmslite.patches.v1_inventory_count
 sbx_wmslite.patches.v2_loading_model
+sbx_wmslite.patches.v3_wms_manager
+sbx_wmslite.patches.v4_workspace
+sbx_wmslite.patches.v5_bin_code_index

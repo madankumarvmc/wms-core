@@ -12,11 +12,13 @@ from frappe import _
 from frappe.utils import cint, getdate, now_datetime, today
 
 SUPERVISOR = "Loading Supervisor"
+MANAGER = "WMS Manager"
+CONSOLE_ROLES = {SUPERVISOR, MANAGER, "System Manager"}
 OPEN_STATES = ("Open", "In Progress", "Pending Approval")
 
 
 def _require_console():
-	if SUPERVISOR not in frappe.get_roles() and "System Manager" not in frappe.get_roles():
+	if not (set(frappe.get_roles()) & CONSOLE_ROLES):
 		raise frappe.PermissionError("Loading Supervisor role required")
 
 
@@ -82,6 +84,13 @@ def get_dashboard(date_from=None, date_to=None):
 	loaded = sum(int(r.loaded_coils or 0) for r in rows)
 	skipped = sum(int(r.skipped_coils or 0) for r in rows)
 
+	# --- inventory snapshot (always "now": stock on hand is a live figure, not
+	# a throughput one, so the date range must not touch it) ---
+	inv = frappe.db.sql("""SELECT COUNT(*) coils, COUNT(DISTINCT bin_code) bins,
+			COALESCE(SUM(weight), 0) weight,
+			SUM(CASE WHEN status = 'Picked' THEN 1 ELSE 0 END) picked
+		FROM `tabBin Inventory`""", as_dict=True)[0]
+
 	return {
 		"live": live,
 		"throughput": throughput,
@@ -90,6 +99,11 @@ def get_dashboard(date_from=None, date_to=None):
 			"pending": planned - loaded - skipped,
 			"progress_pct": round(100 * loaded / planned, 1) if planned else 0,
 		},
+		"inventory": {
+			"coils": cint(inv.coils), "bins": cint(inv.bins),
+			"weight": round(float(inv.weight or 0), 1), "picked": cint(inv.picked),
+		},
+		"scans": _scan_stats(date_from, date_to),
 	}
 
 
@@ -301,7 +315,12 @@ def retry_coil_loading(coil):
 # Bin Inventory — display
 # --------------------------------------------------------------------------
 @frappe.whitelist()
-def get_bin_inventory(q=None, bin_code=None, status=None, limit=200):
+def get_bin_inventory(q=None, bin_code=None, status=None, limit=50, start=0):
+	"""Coil-level inventory, paginated.
+
+	`total` is the count MATCHING the filters (not the table size) — the UI shows
+	"showing N of M", so a filtered search must narrow M or the pager lies.
+	"""
 	_require_console()
 	filters = {}
 	if bin_code:
@@ -310,16 +329,377 @@ def get_bin_inventory(q=None, bin_code=None, status=None, limit=200):
 		filters["status"] = status
 	or_filters = None
 	if q:
-		or_filters = [["coil_barcode", "like", f"%{q}%"], ["bin_code", "like", f"%{q}%"]]
+		or_filters = [["coil_barcode", "like", f"{q}%"], ["bin_code", "like", f"{q}%"]]
+	common = {"filters": filters, "or_filters": or_filters}
 	rows = frappe.get_all(
-		"Bin Inventory", filters=filters, or_filters=or_filters,
+		"Bin Inventory",
 		fields=["name as coil_barcode", "bin_code", "material_grade", "weight", "zone",
 				"aisle", "status", "source", "updated_at"],
-		order_by="bin_code asc, coil_barcode asc", limit_page_length=cint(limit),
-	)
-	total = frappe.db.count("Bin Inventory")
-	bins = len({r.bin_code for r in rows})
-	return {"rows": rows, "total": total, "bins_shown": bins}
+		# most-recently-touched first: with 50k+ coils the useful rows are the
+		# ones that just moved, and bin_code asc pinned you to the same page.
+		order_by="updated_at desc, coil_barcode asc",
+		limit_page_length=cint(limit), limit_start=cint(start), **common)
+	total = frappe.db.count("Bin Inventory", filters=filters) if not q else len(
+		frappe.get_all("Bin Inventory", pluck="name", limit_page_length=0, **common))
+	return {"rows": rows, "total": total, "start": cint(start), "limit": cint(limit)}
+
+
+@frappe.whitelist()
+def get_bin_rollup(q=None, limit=50, start=0):
+	"""Inventory grouped by bin — 760 bins instead of 53k coils.
+
+	This is the default Inventory view: a flat coil list of that size can't be
+	browsed, but the bin count is small enough to page through, and each row
+	drills into its coils via get_bin_inventory(bin_code=...).
+	"""
+	_require_console()
+	where, vals = ["1 = 1"], {}
+	if q:
+		where.append("(bin_code LIKE %(q)s OR coil_barcode LIKE %(q)s)")
+		vals["q"] = f"{q}%"   # prefix: index-backed (see _txn_where)
+	clause = " AND ".join(where)
+	rows = frappe.db.sql(f"""SELECT bin_code, COUNT(*) coils, COALESCE(SUM(weight), 0) weight,
+			MAX(updated_at) last_updated,
+			SUM(CASE WHEN status = 'Picked' THEN 1 ELSE 0 END) picked
+		FROM `tabBin Inventory` WHERE {clause}
+		GROUP BY bin_code ORDER BY bin_code ASC
+		LIMIT %(limit)s OFFSET %(start)s""",
+		dict(vals, limit=cint(limit), start=cint(start)), as_dict=True)
+	total = frappe.db.sql(
+		f"SELECT COUNT(DISTINCT bin_code) FROM `tabBin Inventory` WHERE {clause}", vals)[0][0]
+	return {"rows": rows, "total": cint(total), "start": cint(start), "limit": cint(limit)}
+
+
+# --------------------------------------------------------------------------
+# scan transactions (Coil Transaction — the append-only scan feed)
+# --------------------------------------------------------------------------
+def _txn_where(date_from=None, date_to=None, source=None, q=None, unprocessed=0):
+	"""Shared WHERE builder for the transaction list + its counts."""
+	where, vals = ["1 = 1"], {}
+	if date_from:
+		where.append("scanned_at >= %(df)s")
+		vals["df"] = f"{date_from} 00:00:00"
+	if date_to:
+		where.append("scanned_at <= %(dt)s")
+		vals["dt"] = f"{date_to} 23:59:59"
+	if source:
+		where.append("source = %(src)s")
+		vals["src"] = source
+	if cint(unprocessed):
+		where.append("processed = 0")
+	if q:
+		# Prefix-anchored on purpose: a leading wildcard makes this a full scan of
+		# 250k+ rows (EXPLAIN: type=ALL, no key), while "q%" uses the coil_barcode
+		# index. Barcodes and bin codes are also naturally typed from the start.
+		where.append("(coil_barcode LIKE %(q)s OR bin_code LIKE %(q)s)")
+		vals["q"] = f"{q}%"
+	return " AND ".join(where), vals
+
+
+def _scan_stats(date_from=None, date_to=None):
+	"""Dashboard tiles for scan activity, scoped to the same range as throughput.
+
+	The DISTINCT is deliberately a SEPARATE query: folded into the aggregate below
+	it forces a full table scan (measured 2807ms over 260k rows), while on its own
+	it rides the coil_barcode index (503ms).
+	"""
+	clause, vals = _txn_where(date_from, date_to)
+	row = frappe.db.sql(f"""SELECT COUNT(*) total,
+			SUM(CASE WHEN source = 'Push API' THEN 1 ELSE 0 END) sap_feed,
+			SUM(CASE WHEN source = 'In-app' THEN 1 ELSE 0 END) in_app,
+			MAX(scanned_at) last_scan
+		FROM `tabCoil Transaction` WHERE {clause}""", vals, as_dict=True)[0]
+	coils = frappe.db.sql(
+		f"SELECT COUNT(DISTINCT coil_barcode) FROM `tabCoil Transaction` WHERE {clause}", vals)[0][0]
+	return {
+		"total": cint(row.total), "coils": cint(coils),
+		"sap_feed": cint(row.sap_feed), "in_app": cint(row.in_app),
+		"last_scan": str(row.last_scan) if row.last_scan else None,
+		# never range-scoped: a derivation backlog is a "right now" problem
+		"unprocessed": frappe.db.count("Coil Transaction", {"processed": 0}),
+	}
+
+
+@frappe.whitelist()
+def get_coil_transactions(q=None, source=None, date_from=None, date_to=None,
+						  unprocessed=0, limit=50, start=0):
+	"""The scan feed, newest first, paginated.
+
+	`source` splits the two very different populations sharing this table:
+	'Push API' (the SAP inventory feed) vs 'In-app' (Inventory Count scans).
+	"""
+	_require_console()
+	clause, vals = _txn_where(date_from, date_to, source, q, unprocessed)
+	rows = frappe.db.sql(f"""SELECT name, coil_barcode, bin_code, scanned_at, transaction_type,
+			source, username, weight, material_grade, qc, processed, plant, product
+		FROM `tabCoil Transaction` WHERE {clause}
+		ORDER BY scanned_at DESC, name DESC
+		LIMIT %(limit)s OFFSET %(start)s""",
+		dict(vals, limit=cint(limit), start=cint(start)), as_dict=True)
+	total = frappe.db.sql(f"SELECT COUNT(*) FROM `tabCoil Transaction` WHERE {clause}", vals)[0][0]
+	return {"rows": rows, "total": cint(total), "start": cint(start), "limit": cint(limit),
+			"stats": _scan_stats(date_from, date_to)}
+
+
+@frappe.whitelist()
+def get_transaction_detail(name):
+	"""One scan with its raw payload — the debugging seam for the SAP feed."""
+	_require_console()
+	d = frappe.db.get_value(
+		"Coil Transaction", name,
+		["name", "coil_barcode", "bin_code", "scanned_at", "transaction_type", "source",
+		 "username", "weight", "material_grade", "qc", "plant", "product", "sized",
+		 "processed", "processed_at", "bin_inventory", "txn_key", "raw_json", "creation"],
+		as_dict=True)
+	if not d:
+		frappe.throw(_("Transaction {0} not found").format(name))
+	return d
+
+
+@frappe.whitelist()
+def reprocess_transactions():
+	"""Derive Bin Inventory from any still-unprocessed scans, now.
+
+	The `*/5` scheduler sweep normally does this; this button exists so a
+	supervisor isn't blocked when the scheduler is down.
+	"""
+	_require_console()
+	from sbx_wmslite import bin_api
+
+	pending = frappe.db.count("Coil Transaction", {"processed": 0})
+	bin_api.process_pending_transactions()
+	frappe.db.commit()
+	return {"ok": True, "processed": pending,
+			"remaining": frappe.db.count("Coil Transaction", {"processed": 0})}
+
+
+# --------------------------------------------------------------------------
+# Excel export — every console view streams the rows behind what's on screen
+# --------------------------------------------------------------------------
+# The console pages 50 rows at a time; an export is only useful if it carries the
+# whole filtered set, so it re-runs the same query with a much larger ceiling.
+# The cap is a memory guard (an unfiltered Coil Transaction export would be 260k+
+# rows): when it bites, the sheet says so rather than silently ending short.
+EXPORT_LIMIT = 20000
+
+# view -> (sheet name, [(column label, row key), ...])
+_EXPORT_COLUMNS = {
+	"trucks": ("Trucks", [
+		("Plan", "name"), ("Truck", "truck_number"), ("Status", "plan_status"),
+		("GI Status", "gi_status"), ("Source", "source"), ("SAP Plan ID", "sap_plan_id"),
+		("Total Coils", "total_coils"), ("Loaded", "loaded_coils"),
+		("Skipped", "skipped_coils"), ("Pending", "pending_coils"),
+		("Claimed By", "claimed_by"), ("Received At", "received_at"),
+	]),
+	"inventory_bin": ("Inventory by Bin", [
+		("Bin", "bin_code"), ("Coils", "coils"), ("Weight", "weight"),
+		("Picked", "picked"), ("Last Updated", "last_updated"),
+	]),
+	"inventory_coil": ("Inventory by Coil", [
+		("Bin", "bin_code"), ("Coil", "coil_barcode"), ("Grade", "material_grade"),
+		("Weight", "weight"), ("Zone", "zone"), ("Aisle", "aisle"),
+		("Status", "status"), ("Source", "source"), ("Updated", "updated_at"),
+	]),
+	"transactions": ("Scan Transactions", [
+		("Scanned At", "scanned_at"), ("Coil", "coil_barcode"), ("Bin", "bin_code"),
+		("Type", "transaction_type"), ("Source", "source"), ("Scanned By", "username"),
+		("Weight", "weight"), ("Grade", "material_grade"), ("QC", "qc"),
+		("Plant", "plant"), ("Product", "product"), ("Derived", "processed"),
+	]),
+	"confirmations": ("SAP Confirmations", [
+		("Confirmation", "name"), ("Truck", "truck_number"), ("Loading Plan", "loading_plan"),
+		("SAP Plan ID", "sap_plan_id"), ("Type", "confirmation_type"), ("Status", "status"),
+		("Attempts", "attempts"), ("GI Document", "sap_gi_document"),
+		("HTTP Status", "http_status"), ("Last Error", "last_error"),
+		("Released By", "released_by"), ("Confirmed At", "confirmed_at"),
+		("Next Attempt", "next_attempt_at"),
+	]),
+	"saploading": ("SAP Loading", [
+		("Coil", "coil_barcode"), ("Truck", "truck_number"), ("Plan", "plan"),
+		("SAP Plan ID", "sap_plan_id"), ("Coil Status", "coil_status"),
+		("Grade", "material_grade"), ("Weight", "weight"),
+		("T1 Status", "sap_loading_status"), ("Pushed At", "sap_loading_pushed_at"),
+		("Message", "sap_loading_message"),
+	]),
+	"saplog": ("SAP Log", [
+		("Time", "received_at"), ("Direction", "direction"), ("Action", "action"),
+		("Result", "result"), ("Truck", "truck_number"), ("SAP Plan ID", "sap_plan_id"),
+		("Loading Plan", "loading_plan"), ("Coils", "coil_count"),
+		("Message", "message"), ("Source IP", "source_ip"),
+	]),
+	"truck_detail": ("Truck Coils", [
+		("Coil", "coil_barcode"), ("Status", "coil_status"), ("Grade", "material_grade"),
+		("Weight", "weight"), ("Unplanned", "unplanned"), ("Skip Reason", "skip_reason"),
+		("Loaded By", "loaded_by"), ("Loaded At", "loaded_at"),
+		("T1 Status", "sap_loading_status"), ("Pushed At", "sap_loading_pushed_at"),
+		("Message", "sap_loading_message"),
+	]),
+}
+
+
+def _export_rows(view, args):
+	"""Fetch the full (filtered) row set for a console view.
+
+	Deliberately calls the same endpoints the screen does, so an export can never
+	drift from what the supervisor was looking at when they clicked it.
+	"""
+	limit = EXPORT_LIMIT
+	df, dt = args.get("date_from"), args.get("date_to")
+	q, status = args.get("q"), args.get("status")
+
+	if view == "trucks":
+		return get_trucks(status=status, q=q, date_from=df, date_to=dt, limit=limit)
+	if view == "inventory_bin":
+		return get_bin_rollup(q=q, limit=limit, start=0)["rows"]
+	if view == "inventory_coil":
+		return get_bin_inventory(q=q, bin_code=args.get("bin_code"), status=status,
+								 limit=limit, start=0)["rows"]
+	if view == "transactions":
+		return get_coil_transactions(q=q, source=args.get("source"), date_from=df, date_to=dt,
+									 unprocessed=args.get("unprocessed") or 0,
+									 limit=limit, start=0)["rows"]
+	if view == "confirmations":
+		return get_confirmations(status=status, date_from=df, date_to=dt, limit=limit)
+	if view == "saploading":
+		return get_coil_loading(status=status, truck=args.get("truck") or q,
+								date_from=df, date_to=dt, limit=limit)
+	if view == "saplog":
+		return get_sap_log(result=args.get("result"), direction=args.get("direction"),
+						   date_from=df, date_to=dt, limit=limit)
+	if view == "truck_detail":
+		plan = args.get("plan")
+		if not plan:
+			frappe.throw(_("plan is required for this export"))
+		return get_truck_detail(plan)["coils"]
+	frappe.throw(_("Unknown export view: {0}").format(view))
+
+
+def _xlsx_response(filename, sheet, header_lines, columns, rows):
+	"""Build a one-sheet workbook and hand it to Frappe's download response."""
+	from frappe.utils.xlsxutils import make_xlsx
+
+	data = [[line] for line in header_lines]
+	data.append([])
+	data.append([label for label, _key in columns])
+	for r in rows:
+		data.append([_cell(r.get(key)) for _label, key in columns])
+
+	xlsx = make_xlsx(data, sheet)
+	frappe.response["filename"] = filename
+	frappe.response["filecontent"] = xlsx.getvalue()
+	frappe.response["type"] = "binary"
+
+
+def _cell(v):
+	"""openpyxl writes dates/numbers natively; everything else goes in as text."""
+	import datetime
+
+	if v is None:
+		return ""
+	if isinstance(v, (int, float, datetime.date, datetime.datetime)):
+		return v
+	return str(v)
+
+
+@frappe.whitelist()
+def export_view(view, **kwargs):
+	"""Download the current console view as .xlsx, honouring its live filters.
+
+	Called as a plain GET link from the console so the browser handles the save
+	dialog; every list view passes the exact filter args it is displaying.
+	"""
+	_require_console()
+	if view not in _EXPORT_COLUMNS:
+		frappe.throw(_("Unknown export view: {0}").format(view))
+	sheet, columns = _EXPORT_COLUMNS[view]
+	rows = _export_rows(view, kwargs)
+
+	stamp = now_datetime()
+	head = ["SBX WMSLite — " + sheet,
+			"Exported {0} by {1}".format(stamp.strftime("%Y-%m-%d %H:%M"), frappe.session.user)]
+	head.append("Filters: " + _filter_note(view, kwargs))
+	if len(rows) >= EXPORT_LIMIT:
+		head.append("NOTE: truncated at the {0}-row export limit — narrow the filters "
+					"for the rest.".format(EXPORT_LIMIT))
+
+	_xlsx_response(
+		"wmslite_{0}_{1}.xlsx".format(view, stamp.strftime("%Y%m%d_%H%M%S")),
+		sheet, head, columns, rows)
+
+
+_FILTER_LABELS = {"date_from": "from", "date_to": "to", "q": "search", "status": "status",
+				  "source": "source", "direction": "direction", "result": "result",
+				  "truck": "truck", "bin_code": "bin", "plan": "plan",
+				  "unprocessed": "unprocessed only"}
+
+# Only the keys a view actually queries on: echoing an ignored param (a date on
+# the inventory rollup, say) would read as a filter that never ran.
+_VIEW_FILTERS = {
+	"trucks": ["q", "status", "date_from", "date_to"],
+	"inventory_bin": ["q"],
+	"inventory_coil": ["q", "bin_code", "status"],
+	"transactions": ["q", "source", "unprocessed", "date_from", "date_to"],
+	"confirmations": ["status", "date_from", "date_to"],
+	"saploading": ["status", "truck", "q", "date_from", "date_to"],
+	"saplog": ["result", "direction", "date_from", "date_to"],
+	"truck_detail": ["plan"],
+}
+
+
+def _filter_note(view, args):
+	"""Human-readable filter line for the sheet header — an exported file that
+	doesn't say what it was filtered by gets misread once it leaves the console."""
+	parts = []
+	for key in _VIEW_FILTERS.get(view, []):
+		val = args.get(key)
+		if val in (None, "", 0, "0"):
+			continue
+		label = _FILTER_LABELS[key]
+		parts.append(label if key == "unprocessed" else "{0}={1}".format(label, val))
+	return ", ".join(parts) or "none (all rows)"
+
+
+@frappe.whitelist()
+def export_dashboard(date_from=None, date_to=None):
+	"""The dashboard is tiles, not a table — export it as metric/value pairs."""
+	_require_console()
+	d = get_dashboard(date_from, date_to)
+	rng = "{0} → {1}".format(date_from or "beginning", date_to or "today")
+	rows = [
+		("Now", "Open / Active trucks", d["live"]["open"]),
+		("Now", "In Progress", d["live"]["in_progress"]),
+		("Now", "Awaiting Approval", d["live"]["pending_approval"]),
+		("Now", "GI Awaiting Release", d["live"]["gi_awaiting_release"]),
+		("Now", "GI Failed", d["live"]["gi_failed"]),
+		("Throughput", "Completed trucks", d["throughput"]["completed"]),
+		("Throughput", "Coils loaded", d["throughput"]["coils_loaded"]),
+		("Throughput", "Rejects", d["throughput"]["rejects"]),
+		("Coil progress", "Planned", d["coils"]["planned"]),
+		("Coil progress", "Loaded", d["coils"]["loaded"]),
+		("Coil progress", "Skipped", d["coils"]["skipped"]),
+		("Coil progress", "Pending", d["coils"]["pending"]),
+		("Coil progress", "Progress %", d["coils"]["progress_pct"]),
+		("Inventory on hand", "Coils in stock", d["inventory"]["coils"]),
+		("Inventory on hand", "Bins occupied", d["inventory"]["bins"]),
+		("Inventory on hand", "Total weight", d["inventory"]["weight"]),
+		("Inventory on hand", "Picked", d["inventory"]["picked"]),
+		("Scan activity", "Scans", d["scans"]["total"]),
+		("Scan activity", "From SAP feed", d["scans"]["sap_feed"]),
+		("Scan activity", "Inventory count", d["scans"]["in_app"]),
+		("Scan activity", "Coils touched", d["scans"]["coils"]),
+		("Scan activity", "Unprocessed (now)", d["scans"]["unprocessed"]),
+		("Scan activity", "Last scan", d["scans"]["last_scan"] or "—"),
+	]
+	stamp = now_datetime()
+	_xlsx_response(
+		"wmslite_dashboard_{0}.xlsx".format(stamp.strftime("%Y%m%d_%H%M%S")),
+		"Dashboard",
+		["SBX WMSLite — Dashboard",
+		 "Exported {0} by {1}".format(stamp.strftime("%Y-%m-%d %H:%M"), frappe.session.user),
+		 "Throughput + scan range: " + rng,
+		 "Live and inventory figures are as of the export time, not the range."],
+		[("Section", "section"), ("Metric", "metric"), ("Value", "value")],
+		[{"section": s, "metric": m, "value": v} for s, m, v in rows])
 
 
 # --------------------------------------------------------------------------

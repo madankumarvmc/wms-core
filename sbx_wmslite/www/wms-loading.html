@@ -142,6 +142,12 @@
 			background: #fff7f1; border: 1px solid var(--sb-orange); border-radius: var(--sb-radius-sm); padding: 11px 12px; }
 		.bin-context .bx-code { font-family: var(--sb-font-display, 'Oswald'); font-size: 18px; font-weight: 800; line-height: 1.05; }
 		.bin-context .bx-loc { color: var(--sb-muted); font-size: 12px; }
+		/* account chip (initials) — opens the account sheet: who am I + sign out */
+		.uchip { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 26px;
+			padding: 0 7px; background: var(--sb-bg); border: 1px solid var(--sb-line); color: var(--sb-ink);
+			border-radius: var(--sb-pill); font-family: var(--sb-font-body); font-size: 11px; font-weight: 700;
+			letter-spacing: .02em; cursor: pointer; }
+		.uchip:active { transform: scale(.96); }
 		/* task picker */
 		.switchbtn { font-size: 16px; font-weight: 700; padding: 2px 9px; border-radius: var(--sb-pill);
 			background: var(--sb-blue-bg, #e9f1fb); color: var(--sb-blue, #2f6db5); border: none; cursor: pointer; line-height: 1.3; }
@@ -184,6 +190,7 @@
 		<span class="spacer"></span>
 		<span class="qbadge" id="qbadge">0 queued</span>
 		<span class="net on" id="net">online</span>
+		<button class="uchip" id="uchip" type="button" title="Account" aria-label="Account and sign out"></button>
 	</div>
 
 	<div class="wrap">
@@ -491,6 +498,58 @@
 				await refreshQueueBadge();
 				openQueueSheet();
 			});
+		}
+
+		// ---------- account sheet (who am I / sign out) ----------
+		// The PWA runs in standalone display mode: no address bar, no browser chrome.
+		// Without this an operator on a shared HHT has no way out, and every scan of
+		// the next shift lands under the previous login (confirm_load / count_scan both
+		// stamp frappe.session.user).
+		function initials(name) {
+			const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+			if (!parts.length) return "?";
+			return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+		}
+		async function openUserSheet() {
+			const n = await queueCount();
+			const online = navigator.onLine;
+			// The queue lives in this device's IndexedDB, not in the session — it survives
+			// a sign-out and would then replay under whoever logs in next. Say so plainly.
+			const warn = n
+				? '<div class="q-err" style="margin-top:12px;">\u26a0 ' + n + ' action' + (n === 1 ? '' : 's') +
+					' still queued on this device. Queued actions stay on the device after you sign out and would ' +
+					'sync under the next person who logs in here \u2014 sync them now so they are recorded against you.</div>'
+				: '';
+			openSheet(
+				'<div class="row" style="align-items:baseline;"><div style="flex:1;min-width:0;">' +
+				'<div class="sb-label">Signed in as</div>' +
+				'<h2 class="sb-h2" style="margin:.2em 0;">' + esc(USER || "\u2014") + '</h2></div></div>' +
+				warn +
+				(n && online ? '<button class="sb-btn sb-btn--primary" style="width:100%;margin-top:12px;" id="u-sync">Sync ' + n + ' queued now</button>' : '') +
+				'<button class="sb-btn sb-btn--ghost" style="width:100%;margin-top:' + (n ? '8' : '14') + 'px;" id="u-logout">Log out</button>' +
+				'<button class="sb-btn sb-btn--ghost" style="width:100%;margin-top:8px;" onclick="closeSheet()">Close</button>'
+			);
+			const sy = $("u-sync");
+			if (sy) sy.onclick = async () => {
+				sy.textContent = "Syncing\u2026"; sy.disabled = true;
+				await syncQueue();
+				if ($("scrim").classList.contains("show")) openUserSheet();   // re-render with what is left
+			};
+			$("u-logout").onclick = () => logout(n);
+		}
+		async function logout(queued) {
+			const msg = queued
+				? "Log out with " + queued + " action" + (queued === 1 ? "" : "s") + " still queued?\n\n" +
+					"They stay on this device and will sync under the next person who logs in."
+				: "Log out of WMS Core?";
+			if (!confirm(msg)) return;
+			try {
+				await fetch("/api/method/logout", {
+					method: "POST", credentials: "same-origin",
+					headers: { "X-Frappe-CSRF-Token": CSRF },
+				});
+			} catch (e) { /* offline or server error — redirect anyway, never trap the user */ }
+			location.href = "/login";
 		}
 
 		// ---------- SCREEN 1: truck lookup ----------
@@ -1387,9 +1446,11 @@
 		autoScanWatch($("ccoil-input"), handleCountCoilScan);
 		$("cbtn-save").onclick = countFinish;
 		$("qbadge").onclick = openQueueSheet;   // tap the "N queued" badge → offline-queue detail popup
+		$("uchip").onclick = openUserSheet;     // tap the initials chip → account + sign out
 
 		// ---------- boot ----------
 		(async function boot() {
+			$("uchip").textContent = initials(USER);
 			setNet();
 			await openDB();
 			await refreshQueueBadge();
