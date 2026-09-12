@@ -244,6 +244,9 @@
 			</div>
 			<p>Between the two scans the coil is <b>In Transit to Line</b>. The supervisor can see everything
 			still in transit at any time.</p>
+			<div class="callout">While a coil is in transit its stored bin does not change &mdash; it is
+			on a trolley, in neither place. When it is <b>received</b>, the line becomes its location in
+			Bin Inventory, the same as an Inventory Count scan would record it.</div>
 
 			<h3 id="rm-gate">5.1 Gate Dispatch</h3>
 			<p>Tap <b>Gate Dispatch</b> on the task picker, then scan the destination line's barcode.</p>
@@ -391,7 +394,7 @@
 				<tr><td>Goods issue (GI)</td><td>The SAP confirmation that a truck's goods have shipped.</td></tr>
 				<tr><td>T1</td><td>The per-coil loading transaction sent to SAP when a coil is loaded.</td></tr>
 				<tr><td>Line</td><td>A production line — the destination of an RM movement.</td></tr>
-				<tr><td>In Transit to Line</td><td>Scanned out at the gate, not yet scanned in at the line.</td></tr>
+				<tr><td>In Transit to Line</td><td>Scanned out at the gate, not yet scanned in at the line. Its stored bin is still the one it left.</td></tr>
 				<tr><td>Flagged</td><td>A coil received at a line it was not sent to. The supervisor clears it.</td></tr>
 				<tr><td>Batch code</td><td>The short code inside the coil's QR (e.g. <code>JJG40788</code>). Everything tracks on this; the full label is kept beside it for reconciliation.</td></tr>
 			</table>

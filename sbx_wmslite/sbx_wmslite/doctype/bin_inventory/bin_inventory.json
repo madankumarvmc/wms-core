@@ -117,7 +117,7 @@
    "label": "Aisle"
   },
   {
-   "description": "Raw-material movement (gate -> production line). Independent of Status above: a coil in transit keeps its warehouse Bin Code, because the loading flow reads that. Physical RM location is Destination + RM Status.",
+   "description": "Raw-material movement (gate -> production line). While a coil is IN TRANSIT it keeps its warehouse Bin Code, because the loading flow reads that and the coil is in neither place; its location is Destination + RM Status. On RECEIPT the Bin Code is set to the destination line, because an operator is standing there holding it.",
    "fieldname": "section_rm",
    "fieldtype": "Section Break",
    "label": "RM Movement"

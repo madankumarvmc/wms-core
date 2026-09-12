@@ -204,8 +204,11 @@ class TestRMMovement(FrappeTestCase):
 		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
 		self.assertTrue(self._bi(coil, "rm_received_at"))
 		self.assertEqual(self._bi(coil, "rm_received_by"), "Administrator")
-		# Still the invariant: received at a line, but the warehouse bin is intact.
-		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+		# The receipt records the location: the coil is at the line, so bin_code says
+		# so. (It used to stay at the warehouse bin; that left coils the SAP feed had
+		# never sent stuck on the "UNKNOWN" placeholder for ever. See
+		# TestRMReceiptSetsBin.)
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
 
 	def test_receive_idempotent(self):
 		coil = self._coil()
@@ -933,3 +936,124 @@ class TestRMReroute(FrappeTestCase):
 
 		self.assertNotIn("needs_confirm", r)
 		self.assertEqual(r.get("already_in_transit"), 1)
+
+
+class TestRMReceiptSetsBin(FrappeTestCase):
+	"""A receipt records where the coil is, the way an Inventory Count scan does.
+
+	RM is a capture flow: the coils it handles do not all come from SAP. If the
+	receipt did not write the location, a coil the feed has never sent would sit in
+	the "UNKNOWN" placeholder for ever, because nothing else would ever fill it in.
+	"""
+
+	settings = SettingsGuard("rm_enabled", "qr_decode_rule", "bin_decode_rule",
+							 "bin_validation_enabled", "rm_unknown_bin")
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		cls.settings.apply(rm_enabled=1, qr_decode_rule="Identity", bin_decode_rule="Identity",
+						   bin_validation_enabled=0, rm_unknown_bin="__TEST__RM_UNKNOWN")
+		_cleanup()
+
+	@classmethod
+	def tearDownClass(cls):
+		_cleanup()
+		cls.settings.restore()
+		super().tearDownClass()
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		_cleanup()
+
+	def _coil(self):
+		return f"{PREFIX}_BIN_{self._testMethodName}"
+
+	def _bi(self, coil, field):
+		return frappe.db.get_value("Bin Inventory", coil, field)
+
+	def test_receipt_sets_the_bin_to_the_line(self):
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		# In transit the coil is on a forklift — the yard bin still stands.
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+
+		rm_api.rm_receive(LINE_A, coil, client_event_id="r1")
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
+
+	def test_a_coil_sap_never_sent_stops_being_unknown(self):
+		"""The case that prompted this: no feed row, so nothing else can fill it."""
+		coil = self._coil()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		# Dispatch had to invent the row, so it holds the placeholder.
+		self.assertEqual(self._bi(coil, "bin_code"), "__TEST__RM_UNKNOWN")
+
+		rm_api.rm_receive(LINE_A, coil, client_event_id="r1")
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
+
+	def test_a_future_dated_feed_row_cannot_swallow_the_receipt(self):
+		"""upsert_bin keeps the newest scan and drops older ones.
+
+		The feed fills scanned_at from naive ENTRYDATE/ENTRYTIME and rows dated in
+		the future exist on live sites. Routing the receipt through that guard would
+		make it a silent no-op for exactly the coils most likely to be moving, so the
+		receipt writes the row directly.
+		"""
+		coil = self._coil()
+		ahead = add_to_date(now_datetime(), hours=6)
+		bin_api.upsert_bin(coil, {"bin_code": YARD, "scanned_at": ahead}, source="Push API")
+		frappe.db.commit()
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="r1")
+
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
+
+	def test_a_later_genuine_feed_push_still_wins(self):
+		"""The feed remains the owner of warehouse location."""
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD, "scanned_at": now_datetime()},
+						   source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="r1")
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
+
+		later = add_to_date(now_datetime(), minutes=30)
+		bin_api.upsert_bin(coil, {"bin_code": "__TEST__RM_ELSEWHERE", "scanned_at": later},
+						   source="Push API")
+		frappe.db.commit()
+		self.assertEqual(self._bi(coil, "bin_code"), "__TEST__RM_ELSEWHERE")
+
+	def test_undoing_a_receipt_puts_the_bin_back(self):
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="r1")
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
+
+		rm_api.rm_remove(coil, "receive", client_event_id="r1")
+
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.IN_TRANSIT)
+
+	def test_dispatch_undo_does_not_touch_the_bin(self):
+		"""A dispatch never wrote bin_code, so its undo must not replay a stale one."""
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		# The feed moves the coil while it is in transit.
+		frappe.db.set_value("Bin Inventory", coil, "bin_code", "__TEST__RM_MOVED",
+							update_modified=False)
+		frappe.db.commit()
+
+		rm_api.rm_remove(coil, "dispatch", client_event_id="d1")
+
+		self.assertEqual(self._bi(coil, "bin_code"), "__TEST__RM_MOVED")

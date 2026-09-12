@@ -12,3 +12,4 @@ sbx_wmslite.patches.v6_rm_movement
 sbx_wmslite.patches.v7_rm_workspace
 sbx_wmslite.patches.v8_rm_placeholder_bin
 sbx_wmslite.patches.v9_coil_identity
+sbx_wmslite.patches.v10_receipt_sets_bin

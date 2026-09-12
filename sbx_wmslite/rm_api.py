@@ -14,27 +14,40 @@ Two flows the app already has, merged: the gate leg is the Inventory Count UX
 (scan a location, then scan-and-go coils, one Save), the line leg is the Loading
 UX (an expected list with per-coil progress).
 
-WHAT THIS MODULE DELIBERATELY DOES NOT DO
------------------------------------------
-**It never writes `Bin Inventory.bin_code`.** A coil in transit keeps its warehouse
-bin, because the truck-loading flow reads that field: `api.get_plan` ->
-`bin_api.resolve_plan_bins` stamps it onto the loading plan's coil rows, and the
-handheld then *blocks* picking a coil whose bin doesn't match the one the operator
-opened. Writing a production line into `bin_code` would send the truck picker to
-the wrong place and then refuse the right one. Physical RM location is
-`rm_destination` + `rm_status` instead.
+WHEN THIS MODULE WRITES `Bin Inventory.bin_code`
+------------------------------------------------
+**Dispatch never does. Receipt always does.** The split matters:
 
-Consequences of that choice, all deliberate:
-  * `upsert_bin` is never called, so its latest-scan-wins guard cannot silently
-    drop a receipt. (That guard compares against `scanned_at`, which the SAP feed
-    fills from naive `ENTRYDATE`/`ENTRYTIME` with no timezone conversion — a feed
-    posting IST to a UTC site sits 5h30m in the future and would have made every
-    receipt a silent no-op for hours at a stretch.)
-  * Ledger rows leave `bin_code` blank too, so nothing can derive a location from
-    an RM row. `rm_destination` is its own indexed column for that reason.
-  * `Bin Inventory.updated_at` is not bumped: that column orders the console's
-    Inventory view ("what just moved"), and RM traffic would push real warehouse
-    movement off the first page.
+A coil in transit is on a forklift, in neither place, so `bin_code` keeps its last
+known warehouse bin. The truck-loading flow reads that field — `api.get_plan` ->
+`bin_api.resolve_plan_bins` stamps it onto the loading plan's coil rows and the
+handheld then *blocks* picking a coil whose bin doesn't match the one the operator
+opened — so guessing a location mid-transit would send the picker to the wrong
+place and then refuse the right one. In-transit location is `rm_destination` +
+`rm_status` instead.
+
+A receipt is different: an operator is standing at the line holding the coil. That
+is the most authoritative statement about its location anyone has, so it is
+recorded as one, exactly as an Inventory Count scan would be. RM is a capture flow
+— the coils it handles do not all come from SAP — so if the receipt did not write
+the location, a coil the feed has never sent would sit in the `UNKNOWN` placeholder
+for ever, with nothing else able to fill it in. And because destinations are now
+validated against the `WMSLite Bin` master, the value written is always a real
+location.
+
+Consequences, all deliberate:
+  * The receipt writes the row directly rather than through `upsert_bin`, whose
+    latest-scan-wins guard would drop it. That guard compares `scanned_at`, which
+    the SAP feed fills from naive `ENTRYDATE`/`ENTRYTIME`; rows dated in the future
+    exist on live sites and would make a receipt a silent no-op for exactly the
+    coils most likely to be moving. A later genuine feed push still wins, since it
+    runs upsert_bin against the timestamp the receipt set.
+  * Ledger rows still leave `bin_code` blank, so nothing can derive a location from
+    an RM row itself. `rm_destination` is its own indexed column for that reason.
+  * `updated_at` is bumped on receipt only. That column orders the console's
+    Inventory view ("what just moved"), where an arriving coil belongs; a dispatch
+    is not a location change and would only push real movement off the first page.
+  * Undoing a receipt restores the previous `bin_code` from the ledger snapshot.
 
 THE LEDGER IS THE DURABLE RECORD
 --------------------------------
@@ -592,6 +605,26 @@ def rm_receive(destination, raw_qr, client_event_id=None, occurred_at=None,
 		"rm_received_at": ts,
 		"rm_unplanned": unplanned,
 		"rm_expected_destination": expected_dest,
+		# --- the receipt IS a location statement ---------------------------------
+		# Dispatch writes no bin_code (the coil is on a forklift, in neither place),
+		# but a receipt is an operator standing at the line with the coil in hand.
+		# That is the most authoritative thing anyone knows about where it is, so it
+		# is recorded like an Inventory Count scan. Without this, a coil the SAP feed
+		# has never sent stays in the "UNKNOWN" placeholder for ever, because nothing
+		# else will ever fill it in.
+		#
+		# Written straight to the row rather than through `upsert_bin`: that helper
+		# keeps the newest `scanned_at` and drops anything older, and the feed fills
+		# `scanned_at` from naive ENTRYDATE/ENTRYTIME. 19 feed rows on this site are
+		# currently dated in the FUTURE, so routing the receipt through that guard
+		# would make it a silent no-op for exactly the coils most likely to move. A
+		# later genuine feed push still wins, because it re-runs upsert_bin against
+		# the receipt timestamp we set here.
+		"bin_code": destination,
+		"scanned_at": ts,
+		# Bumped here (dispatch deliberately does not) so the console's Inventory
+		# view, which orders by this, shows an arriving coil among "what just moved".
+		"updated_at": ts,
 	}
 	fields["coil_qr_raw"] = raw_scan
 	existed = _apply_rm(coil, fields, prev)
@@ -681,6 +714,13 @@ def rm_remove(coil_barcode, leg, client_event_id=None):
 												restore)
 
 	target = {f: restore.get(f, _BLANK_RM[f]) for f in RM_STATE_FIELDS}
+	# Undoing a RECEIPT must also put the bin back, because the receipt moved it.
+	# Scoped to that leg on purpose: a dispatch never touched bin_code, so restoring
+	# the snapshot there could revert a legitimate feed update that landed in the
+	# meantime. `_snapshot` has always captured bin_code; only the receipt leg has
+	# any business replaying it.
+	if leg == "receive" and "bin_code" in restore and restore.get("bin_code"):
+		target["bin_code"] = restore["bin_code"]
 	if st is not None:
 		frappe.db.set_value("Bin Inventory", coil_barcode, target, update_modified=False)
 
