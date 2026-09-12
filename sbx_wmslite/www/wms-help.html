@@ -82,23 +82,29 @@
 			<a href="#loading-short">3.5 Short-load</a>
 			<a href="#loading-offline">3.6 Offline</a>
 			<a href="#count">4 · Inventory Count</a>
+			<a href="#rm">5 · RM Movement</a>
+			<a href="#rm-gate">5.1 Gate Dispatch</a>
+			<a href="#rm-line">5.2 Line Receipt</a>
+			<a href="#rm-rules">5.3 Rules &amp; offline</a>
 			<div class="grp">Supervisor console</div>
-			<a href="#console">5 · Console</a>
-			<a href="#console-dash">5.1 Dashboard</a>
-			<a href="#console-trucks">5.2 Trucks</a>
-			<a href="#console-inv">5.3 Inventory</a>
-			<a href="#console-sap">5.4 SAP views</a>
-			<a href="#console-import">5.5 Import</a>
+			<a href="#console">6 · Console</a>
+			<a href="#console-dash">6.1 Dashboard</a>
+			<a href="#console-trucks">6.2 Trucks</a>
+			<a href="#console-inv">6.3 Inventory</a>
+			<a href="#console-rm">6.4 RM Movement</a>
+			<a href="#console-sap">6.5 SAP views</a>
+			<a href="#console-import">6.6 Import</a>
 			<div class="grp">Reference</div>
-			<a href="#faq">6 · Troubleshooting</a>
-			<a href="#glossary">7 · Glossary</a>
+			<a href="#faq">7 · Troubleshooting</a>
+			<a href="#glossary">8 · Glossary</a>
 		</nav>
 
 		<main>
 			<h1 class="title">WMS Core — User Manual</h1>
 			<p class="lead">WMS Core is the handheld (phone/scanner) app and supervisor console for
-			truck loading and bin inventory. This guide covers the two handheld tasks —
-			<b>Loading</b> and <b>Inventory Count</b> — and the <b>Supervisor Console</b>.</p>
+			truck loading and bin inventory. This guide covers the four handheld tasks —
+			<b>Loading</b>, <b>Inventory Count</b>, <b>Gate Dispatch</b> and <b>Line Receipt</b> — and the
+			<b>Supervisor Console</b>.</p>
 
 			<!-- ============ 1 OVERVIEW ============ -->
 			<h2 id="overview">1 · Overview</h2>
@@ -109,13 +115,16 @@
 				<div class="role"><b>🖥️ Supervisor console</b><p style="margin:.4em 0 0;font-size:14px;">Opens at <code>/wms-console</code> on a
 					desktop. Supervisors track trucks, review SAP sync, and import data.</p></div>
 			</div>
-			<p>The handheld has two <b>tasks</b>, controlled by your role:</p>
+			<p>The handheld has four <b>tasks</b>. You only see the ones your role allows:</p>
 			<table class="kv">
 				<tr><th>Your role</th><th>What you see</th></tr>
-				<tr><td>Loading Operator</td><td>Loading only</td></tr>
-				<tr><td>Inventory Recorder</td><td>Inventory Count only</td></tr>
-				<tr><td>Loading Supervisor / both roles</td><td>A task picker to choose either</td></tr>
+				<tr><td>Loading Operator</td><td>Loading</td></tr>
+				<tr><td>Inventory Recorder</td><td>Inventory Count</td></tr>
+				<tr><td>RM Gate Operator</td><td>Gate Dispatch</td></tr>
+				<tr><td>RM Line Operator</td><td>Line Receipt</td></tr>
+				<tr><td>Loading Supervisor / more than one role</td><td>A task picker to choose between them</td></tr>
 			</table>
+			<div class="callout">One task only? The app opens straight into it — no picker.</div>
 
 			<!-- ============ 2 GETTING STARTED ============ -->
 			<h2 id="start">2 · Getting started</h2>
@@ -129,13 +138,14 @@
 			<ul>
 				<li><span class="tag-pill" style="background:#e7f6ee;color:#1f9d57;">ONLINE</span> / <span class="tag-pill" style="background:#fdf2e0;color:#b9770e;">OFFLINE</span> — your connection. The app keeps working offline.</li>
 				<li><span class="tag-pill" style="background:#e9f1fb;color:#2f6db5;">N queued</span> — actions saved on the phone waiting to sync (appears only when offline work is pending).</li>
-				<li><span class="tag-pill">⇄ Task</span> — switch between Loading and Inventory Count (only if you have both).</li>
+				<li><span class="tag-pill">⇄ Task</span> — switch between your tasks (only if you have more than one).</li>
 			</ul>
 			<h3>The task picker</h3>
-			<p>If you can do both tasks, you land on the picker. Tap a tile to start; the app remembers
-			your choice next time (switch anytime with <b>⇄ Task</b>).</p>
+			<p>If you can do more than one task, you land on the picker. Tap a tile to start; the app
+			remembers your choice next time (switch anytime with <b>⇄ Task</b>). You only ever see the
+			tiles your role allows.</p>
 			<figure class="phone"><img src="/assets/sbx_wmslite/manual/01-task-picker.png" alt="Task picker" />
-				<figcaption>The task picker — choose Loading or Inventory Count.</figcaption></figure>
+				<figcaption>The task picker — shown here for a user who can do all four tasks.</figcaption></figure>
 
 			<!-- ============ 3 LOADING ============ -->
 			<h2 id="loading">3 · Loading a truck</h2>
@@ -222,29 +232,114 @@
 			<div class="callout">Inventory Count works offline too — scans queue and sync just like loading.
 			Reopening a bin shows the coils already recorded in it.</div>
 
+			<!-- ============ 5 RM MOVEMENT ============ -->
+			<h2 id="rm">5 · RM Movement</h2>
+			<p>RM Movement moves raw-material coils from the <b>plant gate</b> to a <b>production line</b>.
+			It is two jobs done by two people:</p>
+			<div class="roles">
+				<div class="role"><b>🏭 Gate Dispatch</b><p style="margin:.4em 0 0;font-size:14px;">At the gate.
+					Scan the line the coils are going to, then scan each coil onto the trolley.</p></div>
+				<div class="role"><b>🎯 Line Receipt</b><p style="margin:.4em 0 0;font-size:14px;">At the line.
+					Scan each coil as it arrives, against the list of what was sent.</p></div>
+			</div>
+			<p>Between the two scans the coil is <b>In Transit to Line</b>. The supervisor can see everything
+			still in transit at any time.</p>
+
+			<h3 id="rm-gate">5.1 Gate Dispatch</h3>
+			<p>Tap <b>Gate Dispatch</b> on the task picker, then scan the destination line's barcode.</p>
+			<figure class="phone"><img src="/assets/sbx_wmslite/manual/14-rm-gate-line.png" alt="Scan the destination line" />
+				<figcaption>Scan the line the coils are going to.</figcaption></figure>
+			<p>Now scan each coil. Every scan is saved immediately — there is no separate confirm step,
+			and nothing is lost if you close the app.</p>
+			<div class="gallery">
+				<figure class="phone"><img src="/assets/sbx_wmslite/manual/15-rm-gate-scan.png" alt="Scanning coils out to a line" />
+					<figcaption>Scan-and-go. The count updates as you scan.</figcaption></figure>
+				<figure class="phone"><img src="/assets/sbx_wmslite/manual/16-rm-gate-list.png" alt="Coils sent to the line" />
+					<figcaption>Each coil shows its grade, weight and the bin it came from.</figcaption></figure>
+			</div>
+			<ul>
+				<li><b>✕</b> — removes a coil you scanned by mistake.</li>
+				<li><b>Save &amp; next line</b> — finish this line and go straight to scanning the next one.</li>
+			</ul>
+			<div class="callout">Scanning a coil that is already on its way somewhere else simply
+			re-routes it to the line you just scanned.</div>
+
+			<h3 id="rm-line">5.2 Line Receipt</h3>
+			<p>Tap <b>Line Receipt</b> and scan your line. You are asked <b>once</b> — the handheld
+			remembers your line until you tap <b>Change</b> (or sign out).</p>
+			<p>You then see everything on its way to you. <span class="tag-pill">pending</span> means it
+			has not arrived yet.</p>
+			<figure class="phone"><img src="/assets/sbx_wmslite/manual/17-rm-line-expected.png" alt="Coils expected at the line" />
+				<figcaption>Your expected list, with a progress bar.</figcaption></figure>
+			<p>Scan each coil as it arrives. It turns green with a ✅ and the bar fills up.</p>
+			<div class="gallery">
+				<figure class="phone"><img src="/assets/sbx_wmslite/manual/18-rm-line-refused.png" alt="A coil that was not sent to this line" />
+					<figcaption>A coil that was not sent here is refused — nothing is saved.</figcaption></figure>
+				<figure class="phone"><img src="/assets/sbx_wmslite/manual/19-rm-line-done.png" alt="All coils received" />
+					<figcaption>0 to receive — everything has arrived.</figcaption></figure>
+			</div>
+			<div class="callout warn"><b>Only coils sent to your line can be received here.</b>
+			Anything else is refused and nothing is recorded. The message tells you which line the coil
+			was actually sent to — tell your supervisor.</div>
+			<ul>
+				<li><b>✕</b> — undoes a coil you scanned by mistake.</li>
+				<li><b>↻ Refresh</b> — pulls in coils dispatched since you opened the list.</li>
+				<li><b>Save</b> — confirms you are done. Every scan was already saved.</li>
+			</ul>
+
+			<h3 id="rm-rules">5.3 Rules &amp; offline</h3>
+			<table class="kv">
+				<tr><th>Situation</th><th>What happens</th></tr>
+				<tr><td>Coil not sent to your line</td><td>Refused. Nothing saved.</td></tr>
+				<tr><td>Coil already received here</td><td>Told it is already done. No double count.</td></tr>
+				<tr><td>Coil scanned twice at the gate</td><td>Counted once.</td></tr>
+				<tr><td>Gate sends the same coil somewhere else</td><td>It moves to the newest line.</td></tr>
+				<tr><td>No signal</td><td>Keep scanning. Scans queue on the phone and send themselves later.</td></tr>
+			</table>
+			<div class="callout">If a scan was made offline and the situation changed before it reached the
+			server, it is still accepted but <b>flagged</b> for the supervisor — the coil is at your line
+			either way. Flagged coils show up in the console.</div>
+			<div class="callout warn">Sharing a handheld? <b>Sign out</b> at the end of your shift. That
+			clears the remembered line so the next person scans their own.</div>
+
 			<!-- ============ 5 CONSOLE ============ -->
-			<h2 id="console">5 · Supervisor Console</h2>
+			<h2 id="console">6 · Supervisor Console</h2>
 			<p>The console (<code>/wms-console</code>, desktop) is for Loading Supervisors. The left menu
 			switches between views.</p>
 
-			<h3 id="console-dash">5.1 Dashboard</h3>
+			<h3 id="console-dash">6.1 Dashboard</h3>
 			<p>Live counts (open/active trucks, awaiting approval, GI status) and throughput over a date range.</p>
 			<figure class="wide"><img src="/assets/sbx_wmslite/manual/20-console-dashboard.png" alt="Console dashboard" />
 				<figcaption>Dashboard — live status and throughput.</figcaption></figure>
 
-			<h3 id="console-trucks">5.2 Trucks</h3>
+			<h3 id="console-trucks">6.2 Trucks</h3>
 			<p>Search and filter every truck/plan. Click a row to open its detail drawer: coils and their status,
 			the full event history, and per-coil SAP T1 status. From here a supervisor can <b>complete</b>,
 			<b>cancel</b>, or <b>reopen</b> a plan and <b>retry</b> a failed SAP push.</p>
 			<figure class="wide"><img src="/assets/sbx_wmslite/manual/21-console-trucks.png" alt="Truck detail drawer" />
 				<figcaption>Truck list with the detail drawer open.</figcaption></figure>
 
-			<h3 id="console-inv">5.3 Inventory</h3>
+			<h3 id="console-inv">6.3 Inventory</h3>
 			<p>The current coil→bin map (from the push feed, uploads, and in-app Inventory Counts). Search by coil or bin.</p>
 			<figure class="wide"><img src="/assets/sbx_wmslite/manual/22-console-inventory.png" alt="Bin inventory" />
 				<figcaption>Bin Inventory — one row per coil.</figcaption></figure>
 
-			<h3 id="console-sap">5.4 SAP views</h3>
+			<h3 id="console-rm">6.4 RM Movement</h3>
+			<p>Everything moving between the gate and the lines. The tiles across the top are the health
+			check; the table under them is per line.</p>
+			<figure class="wide"><img src="/assets/sbx_wmslite/manual/27-console-rm.png" alt="Console RM Movement view" />
+				<figcaption>Per-line rollup above, coil-level detail below.</figcaption></figure>
+			<table class="kv">
+				<tr><th>Column</th><th>Means</th></tr>
+				<tr><td>In transit</td><td>Sent from the gate, not yet scanned at the line.</td></tr>
+				<tr><td>Oldest</td><td>How long the longest-waiting coil has been out. Orange = worth a look.</td></tr>
+				<tr><td>Flagged</td><td>Arrived at a line it was not sent to. Needs a human.</td></tr>
+				<tr><td>Clear flag</td><td>Records that you have checked it. The coil does not move.</td></tr>
+			</table>
+			<div class="callout">Use <b>Flagged only</b> to see just the exceptions, and <b>⬇ Excel</b> to
+			download exactly what is on screen.</div>
+
+			<h3 id="console-sap">6.5 SAP views</h3>
 			<p>Three views track the SAP integration:</p>
 			<ul>
 				<li><b>SAP Confirmations</b> — outbound goods-issue (GI) per truck. Held partial loads can be <b>Released</b>; failures <b>Retried</b>.</li>
@@ -260,14 +355,14 @@
 					<figcaption>SAP Log — full call timeline.</figcaption></figure>
 			</div>
 
-			<h3 id="console-import">5.5 Import (fallback)</h3>
+			<h3 id="console-import">6.6 Import (fallback)</h3>
 			<p>If the automatic feed is unavailable, upload a CSV/XLSX to create Loading Plans or Bin Inventory.
 			Download the template, upload your file, map the columns, preview for errors, then commit.</p>
 			<figure class="wide"><img src="/assets/sbx_wmslite/manual/26-console-import.png" alt="Import wizard" />
 				<figcaption>Import wizard — template, upload, map, preview, commit.</figcaption></figure>
 
 			<!-- ============ 6 FAQ ============ -->
-			<h2 id="faq">6 · Troubleshooting</h2>
+			<h2 id="faq">7 · Troubleshooting</h2>
 			<table class="kv">
 				<tr><th>Problem</th><th>What to do</th></tr>
 				<tr><td>Scanning doesn't open the coil</td><td>Tap the orange <b>→</b> next to the box, or press Enter. On a scanner, check it's sending the barcode into the focused field.</td></tr>
@@ -279,7 +374,7 @@
 			</table>
 
 			<!-- ============ 7 GLOSSARY ============ -->
-			<h2 id="glossary">7 · Glossary</h2>
+			<h2 id="glossary">8 · Glossary</h2>
 			<table class="kv">
 				<tr><th>Term</th><th>Meaning</th></tr>
 				<tr><td>Coil</td><td>A steel/aluminium coil, identified by its barcode.</td></tr>
@@ -289,6 +384,9 @@
 				<tr><td>Short-load</td><td>Completing a truck with some planned coils left off, with reasons and supervisor approval.</td></tr>
 				<tr><td>Goods issue (GI)</td><td>The SAP confirmation that a truck's goods have shipped.</td></tr>
 				<tr><td>T1</td><td>The per-coil loading transaction sent to SAP when a coil is loaded.</td></tr>
+				<tr><td>Line</td><td>A production line — the destination of an RM movement.</td></tr>
+				<tr><td>In Transit to Line</td><td>Scanned out at the gate, not yet scanned in at the line.</td></tr>
+				<tr><td>Flagged</td><td>A coil received at a line it was not sent to. The supervisor clears it.</td></tr>
 			</table>
 			<p style="margin-top:40px;color:var(--sb-muted);font-size:13px;">WMS Core by StackBox · handheld app <code>/wms-loading</code> · console <code>/wms-console</code></p>
 		</main>
