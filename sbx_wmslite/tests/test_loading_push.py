@@ -14,6 +14,7 @@ from frappe.tests.utils import FrappeTestCase
 from frappe.utils import get_datetime
 
 from sbx_wmslite import loading_push as lp
+from sbx_wmslite.tests.settings_guard import SettingsGuard
 
 TRUCK = "__TEST__LPUSH"
 
@@ -24,20 +25,33 @@ class FakeResp:
 		self.text = text
 
 
+# Every field these tests write is listed here so tearDownClass can put the
+# site's own values back — this Single is shared with the live site.
+SETTINGS = SettingsGuard(
+	"loading_push_enabled",
+	"loading_push_url",
+	"loading_push_user",
+	"loading_txn_type",
+	"loading_location_sep",
+	"loading_push_batch_size",
+	"verify_tls",
+	"auto_complete_on_full_load",
+)
+
+
 def _settings(enabled=1):
-	s = frappe.get_doc("WMSLite Settings")
-	s.loading_push_enabled = enabled
-	s.loading_push_url = "https://sap.example.invalid/sap/bc/zpwmsb/rest"
-	s.loading_push_user = "jindal1"
-	s.loading_txn_type = "T1"
-	s.loading_location_sep = "_"
-	s.loading_push_batch_size = 200
-	s.verify_tls = 0
-	# Deterministic baseline: auto-complete OFF (the shipped default). Tests that
-	# need it ON flip it explicitly.
-	s.auto_complete_on_full_load = 0
-	s.save(ignore_permissions=True)
-	frappe.db.commit()
+	SETTINGS.apply(
+		loading_push_enabled=enabled,
+		loading_push_url="https://sap.example.invalid/sap/bc/zpwmsb/rest",
+		loading_push_user="jindal1",
+		loading_txn_type="T1",
+		loading_location_sep="_",
+		loading_push_batch_size=200,
+		verify_tls=0,
+		# Deterministic baseline: auto-complete OFF (the shipped default). Tests that
+		# need it ON flip it explicitly.
+		auto_complete_on_full_load=0,
+	)
 
 
 def _cleanup():
@@ -58,8 +72,7 @@ class TestLoadingPush(FrappeTestCase):
 	@classmethod
 	def tearDownClass(cls):
 		_cleanup()
-		frappe.db.set_single_value("WMSLite Settings", "loading_push_enabled", 0)
-		frappe.db.commit()
+		SETTINGS.restore()
 		super().tearDownClass()
 
 	def setUp(self):

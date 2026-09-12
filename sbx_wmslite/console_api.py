@@ -9,7 +9,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, getdate, now_datetime, today
+from frappe.utils import cint, get_datetime, getdate, now_datetime, today
 
 SUPERVISOR = "Loading Supervisor"
 MANAGER = "WMS Manager"
@@ -527,6 +527,15 @@ _EXPORT_COLUMNS = {
 		("Loading Plan", "loading_plan"), ("Coils", "coil_count"),
 		("Message", "message"), ("Source IP", "source_ip"),
 	]),
+	"rm": ("RM Movement", [
+		("Coil", "coil_barcode"), ("State", "rm_status"), ("Line", "rm_destination"),
+		("From Bin", "rm_source_bin"), ("Trip", "rm_cycle"),
+		("Hours In Transit", "age_hours"), ("Flagged", "rm_unplanned"),
+		("Expected At", "rm_expected_destination"),
+		("Dispatched By", "rm_dispatched_by"), ("Dispatched At", "rm_dispatched_at"),
+		("Received By", "rm_received_by"), ("Received At", "rm_received_at"),
+		("Grade", "material_grade"), ("Weight", "weight"),
+	]),
 	"truck_detail": ("Truck Coils", [
 		("Coil", "coil_barcode"), ("Status", "coil_status"), ("Grade", "material_grade"),
 		("Weight", "weight"), ("Unplanned", "unplanned"), ("Skip Reason", "skip_reason"),
@@ -566,6 +575,10 @@ def _export_rows(view, args):
 	if view == "saplog":
 		return get_sap_log(result=args.get("result"), direction=args.get("direction"),
 						   date_from=df, date_to=dt, limit=limit)
+	if view == "rm":
+		return get_rm_movement(status=status, destination=args.get("destination"),
+							   flagged=args.get("flagged") or 0, q=q,
+							   date_from=df, date_to=dt, limit=limit, start=0)["rows"]
 	if view == "truck_detail":
 		plan = args.get("plan")
 		if not plan:
@@ -630,7 +643,8 @@ def export_view(view, **kwargs):
 _FILTER_LABELS = {"date_from": "from", "date_to": "to", "q": "search", "status": "status",
 				  "source": "source", "direction": "direction", "result": "result",
 				  "truck": "truck", "bin_code": "bin", "plan": "plan",
-				  "unprocessed": "unprocessed only"}
+				  "unprocessed": "unprocessed only",
+				  "destination": "line", "flagged": "flagged only"}
 
 # Only the keys a view actually queries on: echoing an ignored param (a date on
 # the inventory rollup, say) would read as a filter that never ran.
@@ -642,6 +656,7 @@ _VIEW_FILTERS = {
 	"confirmations": ["status", "date_from", "date_to"],
 	"saploading": ["status", "truck", "q", "date_from", "date_to"],
 	"saplog": ["result", "direction", "date_from", "date_to"],
+	"rm": ["q", "status", "destination", "flagged", "date_from", "date_to"],
 	"truck_detail": ["plan"],
 }
 
@@ -655,7 +670,9 @@ def _filter_note(view, args):
 		if val in (None, "", 0, "0"):
 			continue
 		label = _FILTER_LABELS[key]
-		parts.append(label if key == "unprocessed" else "{0}={1}".format(label, val))
+		# Boolean-style filters read as their own label; the rest as "label=value".
+		parts.append(label if key in ("unprocessed", "flagged")
+					 else "{0}={1}".format(label, val))
 	return ", ".join(parts) or "none (all rows)"
 
 
@@ -931,3 +948,141 @@ def delete_import_batch(batch):
 	frappe.db.set_value("Import Batch", batch, "status", "Rolled Back")
 	frappe.db.commit()
 	return {"ok": True}
+
+
+# --------------------------------------------------------------------------
+# RM Movement (gate -> line)
+# --------------------------------------------------------------------------
+# RM has no header document — a "trip" is just coil state — so these views are the
+# only place a supervisor can see what is out on the floor. Two things need
+# watching: coils that left the gate and never arrived (ageing in transit), and
+# receipts that landed flagged because a replayed offline scan no longer matched
+# the expected list. The strict-receipt rule means flagged rows can ONLY come from
+# that replay path, so the list stays short and is worth reading.
+RM_IN_TRANSIT = "In Transit to Line"
+RM_RECEIVED = "Received"
+
+
+@frappe.whitelist()
+def get_rm_summary(stale_hours=4):
+	"""Per-line rollup: what is in transit, how long it has been, what is flagged.
+
+	`oldest_hours` is the health signal. A line whose oldest in-transit coil is
+	hours old is either mid-shift or has lost a coil, and the supervisor is the only
+	one positioned to tell the difference.
+	"""
+	_require_console()
+	stale_hours = cint(stale_hours) or 4
+	rows = frappe.db.sql("""
+		SELECT rm_destination destination,
+			SUM(CASE WHEN rm_status = %(transit)s THEN 1 ELSE 0 END) in_transit,
+			SUM(CASE WHEN rm_status = %(transit)s THEN COALESCE(weight, 0) ELSE 0 END) transit_weight,
+			SUM(CASE WHEN rm_status = %(recvd)s AND rm_unplanned = 1 THEN 1 ELSE 0 END) flagged,
+			MIN(CASE WHEN rm_status = %(transit)s THEN rm_dispatched_at END) oldest_dispatch,
+			MAX(CASE WHEN rm_status = %(recvd)s THEN rm_received_at END) last_receipt
+		FROM `tabBin Inventory`
+		WHERE rm_destination IS NOT NULL AND rm_destination != ''
+		GROUP BY rm_destination
+		HAVING in_transit > 0 OR flagged > 0
+		ORDER BY in_transit DESC, destination ASC""",
+		{"transit": RM_IN_TRANSIT, "recvd": RM_RECEIVED}, as_dict=True)
+
+	now = now_datetime()
+	for r in rows:
+		r["oldest_hours"] = (round((now - get_datetime(r.oldest_dispatch)).total_seconds() / 3600.0, 1)
+							 if r.oldest_dispatch else None)
+		r["stale"] = 1 if (r["oldest_hours"] is not None and r["oldest_hours"] >= stale_hours) else 0
+	return {
+		"rows": rows,
+		"stale_hours": stale_hours,
+		"totals": {
+			"in_transit": sum(cint(r.in_transit) for r in rows),
+			"flagged": sum(cint(r.flagged) for r in rows),
+			"lines": len(rows),
+			"stale_lines": sum(r["stale"] for r in rows),
+		},
+	}
+
+
+@frappe.whitelist()
+def get_rm_movement(status=None, destination=None, flagged=0, q=None,
+					date_from=None, date_to=None, limit=200, start=0):
+	"""Coil-level RM movement list.
+
+	Dates filter on the timestamp that matters for the row's own state — dispatch
+	time for a coil in transit, receipt time for one that has landed. Filtering both
+	on one column would make the range mean different things in different rows.
+	"""
+	_require_console()
+	where, vals = ["bi.rm_status IS NOT NULL", "bi.rm_status != ''"], {}
+	if status:
+		where.append("bi.rm_status = %(status)s")
+		vals["status"] = status
+	if destination:
+		where.append("bi.rm_destination = %(dest)s")
+		vals["dest"] = destination
+	if cint(flagged):
+		where.append("bi.rm_unplanned = 1")
+	if q:
+		where.append("(bi.coil_barcode LIKE %(q)s OR bi.rm_destination LIKE %(q)s)")
+		vals["q"] = f"{q}%"   # prefix keeps this index-backed
+	stamp = ("CASE WHEN bi.rm_status = '{0}' THEN bi.rm_received_at "
+			 "ELSE bi.rm_dispatched_at END").format(RM_RECEIVED)
+	if date_from:
+		where.append(f"{stamp} >= %(df)s")
+		vals["df"] = date_from + " 00:00:00"
+	if date_to:
+		where.append(f"{stamp} <= %(dt)s")
+		vals["dt"] = date_to + " 23:59:59"
+	clause = " AND ".join(where)
+
+	rows = frappe.db.sql(f"""
+		SELECT bi.coil_barcode, bi.rm_status, bi.rm_destination, bi.rm_source_bin,
+			bi.rm_cycle, bi.rm_unplanned, bi.rm_expected_destination,
+			bi.rm_dispatched_by, bi.rm_dispatched_at,
+			bi.rm_received_by, bi.rm_received_at,
+			bi.material_grade, bi.weight, bi.bin_code
+		FROM `tabBin Inventory` bi
+		WHERE {clause}
+		ORDER BY {stamp} DESC, bi.coil_barcode ASC
+		LIMIT %(limit)s OFFSET %(start)s""",
+		dict(vals, limit=cint(limit), start=cint(start)), as_dict=True)
+
+	now = now_datetime()
+	for r in rows:
+		r["age_hours"] = (round((now - get_datetime(r.rm_dispatched_at)).total_seconds() / 3600.0, 1)
+						  if r.rm_status == RM_IN_TRANSIT and r.rm_dispatched_at else None)
+	total = frappe.db.sql(
+		f"SELECT COUNT(*) FROM `tabBin Inventory` bi WHERE {clause}", vals)[0][0]
+	return {"rows": rows, "total": cint(total), "start": cint(start), "limit": cint(limit)}
+
+
+@frappe.whitelist()
+def get_rm_coil_history(coil_barcode):
+	"""Every RM ledger row for one coil, oldest first — the audit trail.
+
+	Reversed rows are included and marked rather than hidden: "this was undone" is
+	the fact a supervisor is usually chasing.
+	"""
+	_require_console()
+	rows = frappe.get_all(
+		"Coil Transaction",
+		filters={"coil_barcode": (coil_barcode or "").strip(),
+				 "transaction_type": ("like", "RM %")},
+		fields=["name", "transaction_type", "rm_destination", "rm_cycle", "scanned_at",
+				"username", "reversed", "reversed_by", "reversed_at", "raw_json"],
+		order_by="scanned_at asc, creation asc", limit_page_length=0)
+	return {"coil_barcode": coil_barcode, "rows": rows,
+			"state": frappe.db.get_value(
+				"Bin Inventory", coil_barcode,
+				["rm_status", "rm_destination", "rm_unplanned", "rm_expected_destination"],
+				as_dict=True)}
+
+
+@frappe.whitelist()
+def rm_clear_flag(coil_barcode, note=None):
+	"""Acknowledge a flagged receipt. Console roles only — never the line operator."""
+	_require_console()
+	from sbx_wmslite import rm_api
+
+	return rm_api.clear_unplanned_flag(coil_barcode, note=note)

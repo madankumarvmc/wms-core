@@ -5,6 +5,11 @@ A two-legged transfer with an in-transit state between the legs:
   Gate   `rm_dispatch`  scan the destination line, then each coil  -> In Transit to Line
   Line   `rm_receive`   scan against the expected list             -> Received
 
+Receipt is STRICT: a coil that was not dispatched to this line is refused, live, at
+the moment of the scan. The one exception is a replayed offline scan, which is
+accepted and flagged instead — refusing it would destroy a receipt that really
+happened, since the coil is physically at the line whatever the state now says.
+
 Two flows the app already has, merged: the gate leg is the Inventory Count UX
 (scan a location, then scan-and-go coils, one Save), the line leg is the Loading
 UX (an expected list with per-coil progress).
@@ -72,6 +77,10 @@ TXN_DISPATCH = "RM Dispatch"
 TXN_RECEIPT = "RM Receipt"
 TXN_DISPATCH_REVERSAL = "RM Dispatch Reversal"
 TXN_RECEIPT_REVERSAL = "RM Receipt Reversal"
+# Written when a supervisor acknowledges a flagged receipt from the console. Kept in
+# the ledger rather than done silently: clearing a flag is the moment somebody took
+# responsibility for an exception, which is exactly what an audit needs to see.
+TXN_FLAG_CLEARED = "RM Flag Cleared"
 
 LEG_TYPES = {"dispatch": TXN_DISPATCH, "receive": TXN_RECEIPT}
 REVERSAL_TYPES = {TXN_DISPATCH: TXN_DISPATCH_REVERSAL, TXN_RECEIPT: TXN_RECEIPT_REVERSAL}
@@ -466,8 +475,10 @@ def rm_receive(destination, raw_qr, client_event_id=None, occurred_at=None,
 			   synced_offline=0):
 	"""Receive one coil at `destination`. Idempotent on `client_event_id`.
 
-	A coil that is not in transit to this line is still accepted — the line is never
-	blocked by a data problem — and flagged `rm_unplanned` for the supervisor.
+	A LIVE scan of a coil that is not in transit to this line is REFUSED: nothing is
+	written and the operator is told why. A REPLAYED scan (`synced_offline`) is still
+	accepted and flagged `rm_unplanned`, because the device captured it at a moment
+	when the coil legitimately was on its expected list — see the branch comment.
 	"""
 	_require_line()
 	destination = (destination or "").strip()
@@ -501,6 +512,26 @@ def rm_receive(destination, raw_qr, client_event_id=None, occurred_at=None,
 	expected_dest = ""
 	if cur_status == IN_TRANSIT and cur_dest == destination:
 		pass  # the happy path
+	elif not offline:
+		# ---- the strict-receipt rule -------------------------------------------
+		# A coil that is not in transit to this line cannot be received here. The
+		# scan is refused outright: no ledger row, no state change, nothing to
+		# unpick later. The operator is told which line it was actually sent to,
+		# because that is the one fact that resolves the situation on the floor.
+		#
+		# This applies to LIVE scans only. A replayed scan falls through to the
+		# branches below and is still accepted-and-flagged, and that asymmetry is
+		# the whole point: the line device captured the scan at a moment when its
+		# expected list said the coil belonged here, and the state only moved on
+		# afterwards. Refusing it at replay time would destroy a receipt that
+		# genuinely happened — the coil is physically at the line either way — and
+		# leave the operator no way to re-enter it. Flagging surfaces it in the
+		# console instead, where a supervisor can see it and clear it.
+		if cur_status == IN_TRANSIT and cur_dest:
+			_final(_("Coil {0} was sent to {1}, not to this line").format(coil, cur_dest))
+		if cur_status == RECEIVED and cur_dest:
+			_final(_("Coil {0} was already received at {1}").format(coil, cur_dest))
+		_final(_("Coil {0} was not sent to this line").format(coil))
 	elif cur_status == IN_TRANSIT and cur_dest and cur_dest != destination:
 		# Mis-routed, or the gate re-dispatched it while this device was offline.
 		# Either way a human scanned the coil HERE, which is the strongest evidence
@@ -703,3 +734,39 @@ def rm_finish(destination, leg="dispatch"):
 		"received": frappe.db.count("Bin Inventory", {
 			"rm_destination": destination, "rm_status": RECEIVED}),
 	}
+
+
+# --------------------------------------------------------------------------
+# supervisor actions (called from the console, not the handheld)
+# --------------------------------------------------------------------------
+def clear_unplanned_flag(coil_barcode, note=None):
+	"""Acknowledge a flagged receipt. Caller MUST have checked console permission.
+
+	Not whitelisted: it is reached through `console_api.rm_clear_flag`, which does
+	the role check. Exposing it here would let an RM Line Operator clear their own
+	exceptions, which is the one thing the flag exists to prevent.
+
+	The flag is only dropped — `rm_status`/`rm_destination` are left exactly as they
+	are. The coil is physically at the line that scanned it; clearing the flag says
+	"a supervisor has seen this", not "this never happened".
+	"""
+	coil_barcode = (coil_barcode or "").strip()
+	st = _state(coil_barcode)
+	if not st:
+		frappe.throw(_("Coil {0} has no inventory record").format(coil_barcode))
+	if not cint(st.get("rm_unplanned")):
+		return {"ok": True, "already_clear": True, "coil_id": coil_barcode,
+				**_coil_view(coil_barcode, st)}
+
+	was = st.get("rm_expected_destination") or ""
+	frappe.db.set_value("Bin Inventory", coil_barcode,
+						{"rm_unplanned": 0, "rm_expected_destination": ""},
+						update_modified=False)
+	_ledger(coil_barcode, TXN_FLAG_CLEARED,
+			f"rmf_{coil_barcode}_{now_datetime():%Y%m%d%H%M%S%f}",
+			st.get("rm_destination") or "", cint(st.get("rm_cycle")),
+			{"leg": "flag_cleared", "was_expected_at": was,
+			 "received_at_": str(st.get("rm_received_at") or ""), "note": note or ""})
+	frappe.db.commit()
+	return {"ok": True, "coil_id": coil_barcode, "was_expected_at": was,
+			**_coil_view(coil_barcode, _state(coil_barcode))}

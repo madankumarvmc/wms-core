@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\": \"h1\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>SBX WMSLite</b></span>\", \"col\": 12}}, {\"id\": \"sc1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Open Loading Plans\", \"col\": 4}}, {\"id\": \"sc2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Count Scans\", \"col\": 4}}, {\"id\": \"sc3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bin Inventory\", \"col\": 4}}, {\"id\": \"sc4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SAP Loading Pending\", \"col\": 4}}, {\"id\": \"sc5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SAP Log\", \"col\": 4}}, {\"id\": \"sc6\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Settings\", \"col\": 4}}, {\"id\": \"sp1\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"h2\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h6\\\"><b>All DocTypes</b></span>\", \"col\": 12}}, {\"id\": \"card1\", \"type\": \"card\", \"data\": {\"card_name\": \"Loading\", \"col\": 3}}, {\"id\": \"card2\", \"type\": \"card\", \"data\": {\"card_name\": \"Inventory Count\", \"col\": 3}}, {\"id\": \"card3\", \"type\": \"card\", \"data\": {\"card_name\": \"SAP Integration\", \"col\": 3}}, {\"id\": \"card4\", \"type\": \"card\", \"data\": {\"card_name\": \"Setup\", \"col\": 3}}]",
+ "content": "[{\"id\": \"h1\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>SBX WMSLite</b></span>\", \"col\": 12}}, {\"id\": \"sc1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Open Loading Plans\", \"col\": 4}}, {\"id\": \"sc2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Count Scans\", \"col\": 4}}, {\"id\": \"sc3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Bin Inventory\", \"col\": 4}}, {\"id\": \"scrm1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"RM In Transit\", \"col\": 4}}, {\"id\": \"scrm2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"RM Flagged\", \"col\": 4}}, {\"id\": \"sc4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SAP Loading Pending\", \"col\": 4}}, {\"id\": \"sc5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"SAP Log\", \"col\": 4}}, {\"id\": \"sc6\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Settings\", \"col\": 4}}, {\"id\": \"sp1\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"h2\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h6\\\"><b>All DocTypes</b></span>\", \"col\": 12}}, {\"id\": \"card1\", \"type\": \"card\", \"data\": {\"card_name\": \"Loading\", \"col\": 3}}, {\"id\": \"card2\", \"type\": \"card\", \"data\": {\"card_name\": \"Inventory Count\", \"col\": 3}}, {\"id\": \"cardrm\", \"type\": \"card\", \"data\": {\"card_name\": \"RM Movement\", \"col\": 3}}, {\"id\": \"card3\", \"type\": \"card\", \"data\": {\"card_name\": \"SAP Integration\", \"col\": 3}}, {\"id\": \"card4\", \"type\": \"card\", \"data\": {\"card_name\": \"Setup\", \"col\": 3}}]",
  "creation": "2026-08-14 19:15:34.447816",
  "custom_blocks": [],
  "docstatus": 0,
@@ -88,6 +88,37 @@
   {
    "hidden": 0,
    "is_query_report": 0,
+   "label": "RM Movement",
+   "link_count": 2,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "description": "Live RM state per coil: rm_status, rm_destination, rm_cycle. RM never writes bin_code - a coil in transit keeps its warehouse bin",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Bin Inventory",
+   "link_count": 0,
+   "link_to": "Bin Inventory",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "description": "The RM ledger: RM Dispatch / RM Receipt rows, plus their reversals. Undo marks rows reversed, never deletes",
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Coil Transaction",
+   "link_count": 0,
+   "link_to": "Coil Transaction",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "SAP Integration",
    "link_count": 3,
    "link_type": "DocType",
@@ -148,7 +179,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-08-14 19:18:08.302176",
+ "modified": "2026-09-12 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "SBX WMSLite",
  "name": "SBX WMSLite",
@@ -182,6 +213,22 @@
    "doc_view": "",
    "label": "Bin Inventory",
    "link_to": "Bin Inventory",
+   "type": "DocType"
+  },
+  {
+   "color": "Orange",
+   "doc_view": "",
+   "label": "RM In Transit",
+   "link_to": "Bin Inventory",
+   "stats_filter": "{\"rm_status\": \"In Transit to Line\"}",
+   "type": "DocType"
+  },
+  {
+   "color": "Red",
+   "doc_view": "",
+   "label": "RM Flagged",
+   "link_to": "Bin Inventory",
+   "stats_filter": "{\"rm_status\": \"Received\", \"rm_unplanned\": 1}",
    "type": "DocType"
   },
   {

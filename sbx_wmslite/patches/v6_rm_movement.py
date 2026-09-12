@@ -48,9 +48,13 @@ def execute():
 	if frappe.db.exists("DocType", "Coil Transaction"):
 		frappe.db.add_index("Coil Transaction", ["transaction_type", "rm_destination"])
 
-	# The workspace JSON gains an RM Movement card. bench migrate imports a
+	# Keep the Desk workspace in step with the JSON. bench migrate imports a
 	# workspace only when the DB has none, so the reload has to be forced — see
 	# v4_workspace, which exists for exactly this reason.
+	#
+	# NB: this patch shipped claiming it added an RM Movement card, but the
+	# workspace JSON was not changed at the time, so the reload was a no-op.
+	# v7_rm_workspace is the one that actually adds the card.
 	frappe.reload_doc("sbx_wmslite", "workspace", "sbx_wmslite", force=True)
 
 	frappe.db.commit()

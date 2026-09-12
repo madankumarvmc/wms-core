@@ -22,6 +22,7 @@ from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_to_date, now_datetime
 
 from sbx_wmslite import api, bin_api, count_api, rm_api
+from sbx_wmslite.tests.settings_guard import SettingsGuard
 
 LINE_A = "__TEST__RM_LINE_A"
 LINE_B = "__TEST__RM_LINE_B"
@@ -30,16 +31,23 @@ YARD = "__TEST__RM_YARD"
 PREFIX = "__TEST__RM"
 
 
+# Every field these tests write is listed here so tearDownClass can put the
+# site's own values back — this Single is shared with the live site.
+SETTINGS = SettingsGuard(
+	"rm_enabled", "rm_received_history_hours", "rm_unknown_bin",
+	"count_enabled", "qr_decode_rule", "bin_decode_rule",
+)
+
+
 def _settings():
-	s = frappe.get_doc("WMSLite Settings")
-	s.rm_enabled = 1
-	s.rm_received_history_hours = 12
-	s.rm_unknown_bin = "__TEST__RM_UNKNOWN"
-	s.count_enabled = 1
-	s.qr_decode_rule = "Identity"
-	s.bin_decode_rule = "Identity"
-	s.save(ignore_permissions=True)
-	frappe.db.commit()
+	SETTINGS.apply(
+		rm_enabled=1,
+		rm_received_history_hours=12,
+		rm_unknown_bin="__TEST__RM_UNKNOWN",
+		count_enabled=1,
+		qr_decode_rule="Identity",
+		bin_decode_rule="Identity",
+	)
 
 
 def _cleanup():
@@ -61,6 +69,7 @@ class TestRMMovement(FrappeTestCase):
 	@classmethod
 	def tearDownClass(cls):
 		_cleanup()
+		SETTINGS.restore()
 		super().tearDownClass()
 
 	def setUp(self):
@@ -208,24 +217,131 @@ class TestRMMovement(FrappeTestCase):
 		self.assertEqual(frappe.db.count("Coil Transaction", {
 			"coil_barcode": coil, "transaction_type": rm_api.TXN_RECEIPT}), 1)
 
-	def test_receive_never_dispatched_is_unplanned(self):
+	# ---- the strict-receipt rule: live scans -------------------------------
+	def test_receive_never_dispatched_is_refused(self):
+		"""A coil nobody sent here cannot be received here."""
 		coil = self._coil()
 		self._seed(coil)
-		r = rm_api.rm_receive(LINE_A, coil, client_event_id="np1")
+		with self.assertRaises(frappe.ValidationError) as cm:
+			rm_api.rm_receive(LINE_A, coil, client_event_id="np1")
+		self.assertIn("not sent to this line", str(cm.exception))
+		# and nothing at all happened
+		self.assertFalse(self._bi(coil, "rm_status"))
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+		self.assertEqual(frappe.db.count("Coil Transaction", {"coil_barcode": coil}), 0)
+
+	def test_receive_misrouted_is_refused_and_names_the_right_line(self):
+		"""The refusal has to say where the coil actually went, or nobody can act."""
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		with self.assertRaises(frappe.ValidationError) as cm:
+			rm_api.rm_receive(LINE_B, coil, client_event_id="mr1")
+		self.assertIn(LINE_A, str(cm.exception))
+		# still in transit to A, untouched
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.IN_TRANSIT)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_A)
+		self.assertEqual(frappe.db.count(
+			"Coil Transaction", {"coil_barcode": coil, "transaction_type": rm_api.TXN_RECEIPT}), 0)
+
+	def test_receive_already_taken_elsewhere_is_refused(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		with self.assertRaises(frappe.ValidationError) as cm:
+			rm_api.rm_receive(LINE_B, coil, client_event_id="rc2")
+		self.assertIn(LINE_A, str(cm.exception))
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_A)
+
+	def test_refusal_is_terminal_for_the_offline_queue(self):
+		"""A refused receipt must never sit in the queue retrying forever."""
+		coil = self._coil()
+		self._seed(coil)
+		with self.assertRaises(frappe.ValidationError) as cm:
+			rm_api.rm_receive(LINE_A, coil, client_event_id="np1")
+		self.assertTrue(api._terminal_failure(cm.exception))
+
+	# ---- ...and the one exception: replays ---------------------------------
+	def test_replayed_receipt_never_dispatched_is_flagged_not_refused(self):
+		"""The device captured this while its list said the coil belonged here.
+
+		Refusing at replay time would destroy a receipt that really happened — the
+		coil is physically at the line — and give the operator no way to re-enter it.
+		"""
+		coil = self._coil()
+		self._seed(coil)
+		r = rm_api.rm_receive(LINE_A, coil, client_event_id="np1", synced_offline=1)
 		self.assertEqual(r.get("unplanned"), 1)
 		self.assertEqual(r.get("reason"), "not_dispatched")
 		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
 		self.assertEqual(self._bi(coil, "rm_unplanned"), 1)
 
-	def test_receive_misrouted_records_expected_destination(self):
+	def test_replayed_misrouted_receipt_is_flagged_not_refused(self):
 		coil = self._coil()
 		self._seed(coil)
 		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
-		r = rm_api.rm_receive(LINE_B, coil, client_event_id="mr1")
+		r = rm_api.rm_receive(LINE_B, coil, client_event_id="mr1", synced_offline=1)
 		self.assertEqual(r.get("unplanned"), 1)
 		self.assertEqual(r.get("reason"), "misrouted")
 		self.assertEqual(self._bi(coil, "rm_destination"), LINE_B)
 		self.assertEqual(self._bi(coil, "rm_expected_destination"), LINE_A)
+
+	def test_queued_receipt_survives_a_late_gate_sync(self):
+		"""The race the whole exemption exists for, end to end.
+
+		Line receives offline; the gate's dispatch is still queued on another device
+		and lands afterwards. The receipt must survive, flagged.
+		"""
+		coil = self._coil()
+		self._seed(coil)
+		res = api.submit_offline_queue(json.dumps([
+			{"type": "rm_receive", "destination": LINE_A, "raw_qr": coil,
+			 "client_event_id": "q_rc1", "occurred_at": str(now_datetime())},
+		]))
+		self.assertTrue(res[0]["ok"], res[0])
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
+		self.assertEqual(self._bi(coil, "rm_unplanned"), 1)
+
+	# ---- clearing a flag ---------------------------------------------------
+	def test_clear_flag_drops_flag_and_records_who(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_receive(LINE_A, coil, client_event_id="np1", synced_offline=1)
+		self.assertEqual(self._bi(coil, "rm_unplanned"), 1)
+		r = rm_api.clear_unplanned_flag(coil, note="checked on the floor")
+		self.assertTrue(r["ok"])
+		self.assertEqual(self._bi(coil, "rm_unplanned"), 0)
+		# the coil does NOT move — clearing means "seen", not "undone"
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_A)
+		self.assertEqual(frappe.db.count("Coil Transaction", {
+			"coil_barcode": coil, "transaction_type": rm_api.TXN_FLAG_CLEARED}), 1)
+
+	def test_clear_flag_is_idempotent(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_receive(LINE_A, coil, client_event_id="np1", synced_offline=1)
+		rm_api.clear_unplanned_flag(coil)
+		r = rm_api.clear_unplanned_flag(coil)
+		self.assertTrue(r.get("already_clear"))
+		self.assertEqual(frappe.db.count("Coil Transaction", {
+			"coil_barcode": coil, "transaction_type": rm_api.TXN_FLAG_CLEARED}), 1)
+
+	def test_flag_cleared_rows_are_invisible_to_the_derive_sweep(self):
+		"""A new RM txn type must be excluded like the others, or it blanks bin_code.
+
+		The count scan gives the coil a real location row for the sweep to find —
+		without one it would legitimately be dropped as "never had a location", and
+		the test would pass for the wrong reason.
+		"""
+		coil = self._coil()
+		self._seed(coil)
+		count_api.count_scan(YARD, coil, client_event_id="cs1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="np1", synced_offline=1)
+		rm_api.clear_unplanned_flag(coil)
+		count_api._rederive_coil(coil)
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
 
 	def test_open_line_expected_and_recent(self):
 		c1, c2 = self._coil(1), self._coil(2)
@@ -288,7 +404,9 @@ class TestRMMovement(FrappeTestCase):
 		"""
 		coil = self._coil()
 		self._seed(coil)
-		rm_api.rm_receive(LINE_B, coil, client_event_id="rc1")  # unplanned arrival
+		# Arrives somewhere it was never sent — under the strict rule that is only
+		# reachable as a replayed scan, which is what this scenario is.
+		rm_api.rm_receive(LINE_B, coil, client_event_id="rc1", synced_offline=1)
 		earlier = add_to_date(now_datetime(), minutes=-30)
 		r = rm_api.rm_dispatch(LINE_A, coil, client_event_id="late1",
 							   occurred_at=earlier, synced_offline=1)

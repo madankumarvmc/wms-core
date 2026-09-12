@@ -10,6 +10,7 @@ __TEST__-namespaced rows only; cleaned up in tearDownClass.
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
+from frappe.utils import add_to_date, now_datetime
 
 from sbx_wmslite import console_api
 
@@ -229,3 +230,149 @@ class TestConsoleInventoryViews(FrappeTestCase):
 		metrics = {r[1] for r in body if r and r[1]}
 		self.assertIn("Coils in stock", metrics)
 		self.assertIn("Scans", metrics)
+
+
+class TestConsoleRmViews(FrappeTestCase):
+	"""The RM console views — the only window a supervisor has onto the floor.
+
+	RM Movement has no header document (a "trip" is just coil state), so if these
+	views miss a row there is nowhere else to notice it. What is pinned here: the
+	per-line rollup counts what is actually out, ageing is measured from the
+	dispatch, flagged rows are findable, and clearing a flag is a console-only act.
+	"""
+
+	LINE = "__TEST__RMV_LINE"
+	OTHER = "__TEST__RMV_OTHER"
+	YARD = "__TEST__RMV_YARD"
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		cls._wipe()
+		# c1: in transit and old. c2: in transit, fresh. c3: received + flagged.
+		cls.c1, cls.c2, cls.c3 = "__TEST__RMV_C1", "__TEST__RMV_C2", "__TEST__RMV_C3"
+		for c in (cls.c1, cls.c2, cls.c3):
+			_mkbin(c, cls.YARD, 3000)
+		old = add_to_date(now_datetime(), hours=-9)
+		frappe.db.set_value("Bin Inventory", cls.c1, {
+			"rm_status": "In Transit to Line", "rm_destination": cls.LINE,
+			"rm_source_bin": cls.YARD, "rm_cycle": 1, "rm_dispatched_at": old,
+			"rm_dispatched_by": "Administrator"}, update_modified=False)
+		frappe.db.set_value("Bin Inventory", cls.c2, {
+			"rm_status": "In Transit to Line", "rm_destination": cls.LINE,
+			"rm_source_bin": cls.YARD, "rm_cycle": 1,
+			"rm_dispatched_at": now_datetime(), "rm_dispatched_by": "Administrator"},
+			update_modified=False)
+		frappe.db.set_value("Bin Inventory", cls.c3, {
+			"rm_status": "Received", "rm_destination": cls.LINE, "rm_cycle": 1,
+			"rm_received_at": now_datetime(), "rm_received_by": "Administrator",
+			"rm_unplanned": 1, "rm_expected_destination": cls.OTHER},
+			update_modified=False)
+		frappe.db.commit()
+
+	@classmethod
+	def tearDownClass(cls):
+		cls._wipe()
+		super().tearDownClass()
+
+	@classmethod
+	def _wipe(cls):
+		for dt in ("Coil Transaction", "Bin Inventory"):
+			for n in frappe.get_all(dt, filters={"coil_barcode": ["like", "__TEST__RMV%"]},
+									pluck="name"):
+				frappe.delete_doc(dt, n, force=1, ignore_permissions=True)
+		frappe.db.commit()
+
+	def _line(self, summary):
+		return next(r for r in summary["rows"] if r["destination"] == self.LINE)
+
+	# ---- rollup ----
+	def test_summary_counts_in_transit_and_flagged(self):
+		row = self._line(console_api.get_rm_summary())
+		self.assertEqual(row["in_transit"], 2)
+		self.assertEqual(row["flagged"], 1)
+
+	def test_summary_ages_from_the_oldest_dispatch(self):
+		"""A line's health is its oldest coil, not its newest — the newest always
+		looks fine and would hide a coil that never arrived."""
+		row = self._line(console_api.get_rm_summary(stale_hours=4))
+		self.assertGreaterEqual(row["oldest_hours"], 8)
+		self.assertEqual(row["stale"], 1)
+		fresh = self._line(console_api.get_rm_summary(stale_hours=24))
+		self.assertEqual(fresh["stale"], 0)
+
+	def test_summary_skips_lines_with_nothing_to_report(self):
+		dests = {r["destination"] for r in console_api.get_rm_summary()["rows"]}
+		self.assertIn(self.LINE, dests)
+		self.assertNotIn(self.OTHER, dests)   # only ever an *expected* destination
+
+	# ---- coil list ----
+	def test_movement_list_filters_by_line_and_state(self):
+		out = console_api.get_rm_movement(destination=self.LINE)
+		self.assertEqual({r["coil_barcode"] for r in out["rows"]},
+						 {self.c1, self.c2, self.c3})
+		transit = console_api.get_rm_movement(destination=self.LINE,
+											  status="In Transit to Line")
+		self.assertEqual({r["coil_barcode"] for r in transit["rows"]}, {self.c1, self.c2})
+
+	def test_movement_list_finds_flagged_rows(self):
+		out = console_api.get_rm_movement(flagged=1, q="__TEST__RMV")
+		self.assertEqual([r["coil_barcode"] for r in out["rows"]], [self.c3])
+		self.assertEqual(out["rows"][0]["rm_expected_destination"], self.OTHER)
+
+	def test_movement_list_reports_age_for_in_transit_only(self):
+		rows = {r["coil_barcode"]: r for r in
+				console_api.get_rm_movement(destination=self.LINE)["rows"]}
+		self.assertGreaterEqual(rows[self.c1]["age_hours"], 8)
+		self.assertIsNone(rows[self.c3]["age_hours"])   # it arrived; age is meaningless
+
+	def test_movement_total_matches_the_filters(self):
+		"""The UI prints "showing N of M"; a filtered M that counts the whole table
+		lies about how much is left."""
+		out = console_api.get_rm_movement(destination=self.LINE, flagged=1)
+		self.assertEqual(out["total"], 1)
+
+	def test_history_returns_the_ledger_for_one_coil(self):
+		coil = "__TEST__RMV_C4"
+		_mkbin(coil, self.YARD, 1200)
+		_mktxn(coil, "", "In-app", "RM Dispatch", now_datetime())
+		out = console_api.get_rm_coil_history(coil)
+		self.assertEqual([r.transaction_type for r in out["rows"]], ["RM Dispatch"])
+
+	# ---- clearing a flag ----
+	def test_clear_flag_drops_the_flag_but_not_the_coil(self):
+		console_api.rm_clear_flag(self.c3)
+		st = frappe.db.get_value("Bin Inventory", self.c3,
+								 ["rm_unplanned", "rm_status", "rm_destination"], as_dict=True)
+		self.assertEqual(st.rm_unplanned, 0)
+		self.assertEqual(st.rm_status, "Received")
+		self.assertEqual(st.rm_destination, self.LINE)
+		# put it back for the other tests in this class
+		frappe.db.set_value("Bin Inventory", self.c3,
+							{"rm_unplanned": 1, "rm_expected_destination": self.OTHER},
+							update_modified=False)
+		frappe.db.commit()
+
+	def test_rm_views_require_a_console_role(self):
+		"""A line operator must not be able to clear the flag on their own exception."""
+		if not frappe.db.exists("User", PLAIN_USER):
+			u = frappe.new_doc("User")
+			u.email = PLAIN_USER
+			u.first_name = "Plain"
+			u.user_type = "System User"
+			u.insert(ignore_permissions=True)
+			frappe.db.commit()
+		frappe.set_user(PLAIN_USER)
+		try:
+			for call in (lambda: console_api.get_rm_summary(),
+						 lambda: console_api.get_rm_movement(),
+						 lambda: console_api.rm_clear_flag(self.c3)):
+				with self.assertRaises(frappe.PermissionError):
+					call()
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_export_carries_the_rm_rows(self):
+		rows = console_api._export_rows("rm", {"destination": self.LINE})
+		self.assertEqual({r["coil_barcode"] for r in rows}, {self.c1, self.c2, self.c3})

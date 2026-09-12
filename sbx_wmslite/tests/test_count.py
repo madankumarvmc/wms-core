@@ -16,19 +16,27 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from sbx_wmslite import api, bin_api, count_api
+from sbx_wmslite.tests.settings_guard import SettingsGuard
 
 BIN_A = "__TEST__BIN_A"
 BIN_B = "__TEST__BIN_B"
 
 
+# Every field these tests write is listed here so tearDownClass can put the
+# site's own values back — this Single is shared with the live site.
+SETTINGS = SettingsGuard(
+	"count_enabled",
+	"count_qc_default",
+	"qr_decode_rule",
+	"bin_decode_rule",
+)
+
+
 def _settings():
-	s = frappe.get_doc("WMSLite Settings")
-	s.count_enabled = 1
-	s.count_qc_default = "OK"
-	s.qr_decode_rule = "Identity"
-	s.bin_decode_rule = "Identity"
-	s.save(ignore_permissions=True)
-	frappe.db.commit()
+	SETTINGS.apply(
+		count_enabled=1, count_qc_default="OK",
+		qr_decode_rule="Identity", bin_decode_rule="Identity",
+	)
 
 
 def _cleanup():
@@ -49,6 +57,7 @@ class TestInventoryCount(FrappeTestCase):
 	@classmethod
 	def tearDownClass(cls):
 		_cleanup()
+		SETTINGS.restore()
 		super().tearDownClass()
 
 	def setUp(self):

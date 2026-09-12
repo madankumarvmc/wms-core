@@ -12,23 +12,32 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from sbx_wmslite import api, sap_api, truck_api
+from sbx_wmslite.tests.settings_guard import SettingsGuard
 
 TRUCK = "__TEST__TRK_MS"
 DD = "2026-07-15"
 
 
+# Every field these tests write is listed here so tearDownClass can put the
+# site's own values back — this Single is shared with the live site.
+SETTINGS = SettingsGuard(
+	"sap_enabled",
+	"sap_api_key",
+	"qr_decode_rule",
+	"allow_plan_remove_on_resync",
+	"loading_push_enabled",
+	"gi_enabled",
+	"loading_group_mode",
+	"completion_mode",
+)
+
+
 def _settings():
-	s = frappe.get_doc("WMSLite Settings")
-	s.sap_enabled = 1
-	s.sap_api_key = "UT-KEY"
-	s.qr_decode_rule = "Identity"
-	s.allow_plan_remove_on_resync = 1
-	s.loading_push_enabled = 0
-	s.gi_enabled = 0
-	s.loading_group_mode = "By Shipment"
-	s.completion_mode = "Whole Truck"
-	s.save(ignore_permissions=True)
-	frappe.db.commit()
+	SETTINGS.apply(
+		sap_enabled=1, sap_api_key="UT-KEY", qr_decode_rule="Identity",
+		allow_plan_remove_on_resync=1, loading_push_enabled=0, gi_enabled=0,
+		loading_group_mode="By Shipment", completion_mode="Whole Truck",
+	)
 
 
 def _cleanup():
@@ -49,8 +58,7 @@ class TestTruckModel(FrappeTestCase):
 	@classmethod
 	def tearDownClass(cls):
 		_cleanup()
-		frappe.db.set_single_value("WMSLite Settings", "loading_group_mode", "By Shipment")
-		frappe.db.commit()
+		SETTINGS.restore()
 		super().tearDownClass()
 
 	def setUp(self):

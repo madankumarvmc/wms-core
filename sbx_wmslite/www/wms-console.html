@@ -75,7 +75,7 @@
 		window.WMS_CSRF = CSRF; // exposed for E2E seeding helpers
 		const $ = (id) => document.getElementById(id);
 		const CAN_USERS = {{ can_manage_users or 0 }};   // WMS Manager / System Manager
-		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["transactions", "Scan Transactions"], ["confirmations", "SAP Confirmations"], ["saploading", "SAP Loading"], ["saplog", "SAP Log"], ["import", "Import"]]
+		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["transactions", "Scan Transactions"], ["confirmations", "SAP Confirmations"], ["rm", "RM Movement"], ["saploading", "SAP Loading"], ["saplog", "SAP Log"], ["import", "Import"]]
 			.concat(CAN_USERS ? [["users", "Users"]] : []);
 		const GI_PILL = { "Confirmed": "done", "Pending": "open", "Held": "appr", "Sending": "prog", "Failed (Retryable)": "prog", "Failed (Business)": "canc", "Exhausted": "canc", "Not Required": "canc" };
 		const T1_PILL = { "Sent": "done", "Pending": "open", "Failed": "canc", "Not Required": "canc" };
@@ -174,6 +174,7 @@
 				if (state.view === "saplog") return renderSapLog(c);
 				if (state.view === "import") return renderImport(c);
 				if (state.view === "transactions") return renderTransactions(c);
+				if (state.view === "rm") return renderRm(c);
 				if (state.view === "users") return renderUsers(c);
 			} catch (e) { c.innerHTML = '<p style="color:#a23b2e;">' + esc(e.message) + '</p>'; }
 		}
@@ -390,6 +391,103 @@
 			$("tl-status").onchange = load; $("tl-from").onchange = load; $("tl-to").onchange = load;
 			$("tl-clear").onclick = () => { $("tl-from").value = ""; $("tl-to").value = ""; load(); };
 			load();
+		}
+
+		// ---------- RM Movement ----------
+		// RM has no header document, so these two panels ARE the supervisor's view of
+		// the floor: a per-line rollup (what is out, how long it has been out) above a
+		// coil list. "Flagged" is the row that needs a human — under the strict-receipt
+		// rule a flag can only come from a replayed offline scan that no longer matched
+		// the expected list, so the list stays short and every row is worth reading.
+		const RM_PILL = { "In Transit to Line": "prog", "Received": "done" };
+		async function renderRm(c) {
+			c.innerHTML = '<div id="rm-summary"></div>' +
+				'<div class="toolbar" style="margin-top:18px;">' +
+				'<input id="rm-q" placeholder="Search coil or line…" />' +
+				'<select id="rm-status"><option value="">All states</option><option>In Transit to Line</option><option>Received</option></select>' +
+				'<label style="font-size:12px;color:var(--sb-muted);display:flex;align-items:center;gap:6px;">' +
+				'<input type="checkbox" id="rm-flagged" style="width:auto;"> Flagged only</label>' +
+				dateControls("rm", { from: "", to: "" }) +
+				'<span style="flex:1;"></span>' + exportBtn("rm-x") + '</div><div id="rm-table"></div>';
+
+			const args = () => ({ q: $("rm-q").value, status: $("rm-status").value,
+				flagged: $("rm-flagged").checked ? 1 : 0, destination: state.rmDest || "", ...rangeArgs("rm") });
+
+			const loadSummary = async () => {
+				const s = await api("sbx_wmslite.console_api.get_rm_summary");
+				const t = s.totals;
+				const tiles = '<div class="kpis">' +
+					'<div class="kpi"><div class="k">In transit</div><div class="v">' + t.in_transit + '</div></div>' +
+					'<div class="kpi"><div class="k">Lines active</div><div class="v">' + t.lines + '</div></div>' +
+					'<div class="kpi"><div class="k">Ageing &ge; ' + s.stale_hours + 'h</div><div class="v"' +
+						(t.stale_lines ? ' style="color:#b9770e;"' : '') + '>' + t.stale_lines + '</div></div>' +
+					'<div class="kpi"><div class="k">Flagged receipts</div><div class="v"' +
+						(t.flagged ? ' style="color:#a23b2e;"' : '') + '>' + t.flagged + '</div></div></div>';
+				const rows = s.rows.length ? s.rows.map(r =>
+					'<tr><td><b>' + esc(r.destination) + '</b></td><td>' + r.in_transit +
+					'</td><td>' + (r.transit_weight ? Math.round(r.transit_weight) + ' kg' : '—') +
+					'</td><td' + (r.stale ? ' style="color:#b9770e;font-weight:700;"' : '') + '>' +
+						(r.oldest_hours == null ? '—' : r.oldest_hours + ' h') +
+					'</td><td' + (r.flagged ? ' style="color:#a23b2e;font-weight:700;"' : '') + '>' + (r.flagged || 0) +
+					'</td><td style="white-space:nowrap;">' + esc((r.last_receipt || '—').toString().slice(0, 16)) +
+					'</td><td><button class="sb-btn sb-btn--ghost sb-btn--inline" style="padding:6px 10px;font-size:12px;" data-line="' +
+						esc(r.destination) + '">View coils</button></td></tr>').join("")
+					: '<tr><td colspan="7" class="sb-muted">Nothing in transit and nothing flagged</td></tr>';
+				$("rm-summary").innerHTML = tiles +
+					'<div class="sb-label" style="margin:16px 0 6px;">By line</div>' +
+					'<table class="grid"><thead><tr><th>Line</th><th>In transit</th><th>Weight</th>' +
+					'<th>Oldest</th><th>Flagged</th><th>Last receipt</th><th></th></tr></thead><tbody>' +
+					rows + '</tbody></table>';
+				document.querySelectorAll("#rm-summary [data-line]").forEach(b => b.onclick = () => {
+					state.rmDest = b.dataset.line; $("rm-q").value = ""; load();
+				});
+			};
+
+			const load = async () => {
+				const r = await api("sbx_wmslite.console_api.get_rm_movement", args());
+				const scope = state.rmDest
+					? '<div class="sb-muted" style="margin:0 0 8px;font-size:13px;">Line <b>' + esc(state.rmDest) +
+						'</b> · <a href="#" id="rm-allines">show all lines</a></div>' : '';
+				$("rm-table").innerHTML = scope +
+					'<table class="grid"><thead><tr><th>Coil</th><th>State</th><th>Line</th><th>From bin</th>' +
+					'<th>Age</th><th>Dispatched</th><th>Received</th><th>Actions</th></tr></thead><tbody>' +
+					(r.rows.length ? r.rows.map(x => {
+						const flag = x.rm_unplanned
+							? ' <span class="pill canc" title="' +
+								(x.rm_expected_destination ? 'Was sent to ' + esc(x.rm_expected_destination) : 'Never dispatched') +
+								'">flagged</span>' : '';
+						const age = x.age_hours == null ? '—' : x.age_hours + ' h';
+						const act = x.rm_unplanned
+							? '<button class="sb-btn sb-btn--orange sb-btn--inline" style="padding:7px 12px;font-size:12px;" data-clear="' +
+								esc(x.coil_barcode) + '">Clear flag</button>' : '';
+						return '<tr><td><b>' + esc(x.coil_barcode) + '</b>' + flag +
+							'</td><td><span class="pill ' + (RM_PILL[x.rm_status] || "open") + '">' + esc(x.rm_status) + '</span>' +
+							'</td><td>' + esc(x.rm_destination || '—') +
+							'</td><td class="sb-muted">' + esc(x.rm_source_bin || '—') +
+							'</td><td' + (x.age_hours >= 4 ? ' style="color:#b9770e;font-weight:700;"' : '') + '>' + age +
+							'</td><td style="white-space:nowrap;" class="sb-muted">' + esc((x.rm_dispatched_at || '—').toString().slice(0, 16)) +
+							'</td><td style="white-space:nowrap;" class="sb-muted">' + esc((x.rm_received_at || '—').toString().slice(0, 16)) +
+							'</td><td style="white-space:nowrap;">' + act + '</td></tr>';
+					}).join("") : '<tr><td colspan="8" class="sb-muted">No RM movement matches these filters</td></tr>') +
+					'</tbody></table>' +
+					'<p class="sb-muted" style="font-size:12px;margin-top:8px;">Showing ' + r.rows.length + ' of ' + r.total + '</p>';
+				const all = $("rm-allines");
+				if (all) all.onclick = (e) => { e.preventDefault(); state.rmDest = ""; load(); };
+				document.querySelectorAll("#rm-table [data-clear]").forEach(b => b.onclick = async () => {
+					if (!confirm("Clear the exception flag on " + b.dataset.clear + "?\n\nThe coil stays where it is — this records that you have seen it.")) return;
+					b.disabled = true;
+					try { await api("sbx_wmslite.console_api.rm_clear_flag", { coil_barcode: b.dataset.clear }); await loadSummary(); await load(); }
+					catch (e) { alert(e.message); b.disabled = false; }
+				});
+			};
+
+			onExport("rm-x", () => exportUrl("rm", args()));
+			$("rm-q").oninput = () => { clearTimeout(window._rmd); window._rmd = setTimeout(load, 300); };
+			$("rm-status").onchange = load; $("rm-flagged").onchange = load;
+			$("rm-from").onchange = load; $("rm-to").onchange = load;
+			$("rm-clear").onclick = () => { $("rm-from").value = ""; $("rm-to").value = ""; load(); };
+			await loadSummary();
+			await load();
 		}
 
 		// ---------- SAP log ----------

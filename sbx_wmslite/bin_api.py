@@ -21,7 +21,7 @@ BIN_FIELDS = ("bin_code", "material_grade", "weight", "zone", "aisle",
 # Note the SAP feed leaves transaction_type NULL, so exclusion must be NULL-safe:
 # `NULL NOT IN (...)` is NULL in SQL, which would silently drop every feed row.
 RM_TXN_TYPES = ("RM Dispatch", "RM Receipt",
-				"RM Dispatch Reversal", "RM Receipt Reversal")
+				"RM Dispatch Reversal", "RM Receipt Reversal", "RM Flag Cleared")
 
 # Defined here rather than imported from rm_api: rm_api imports this module, so
 # importing back would be circular.

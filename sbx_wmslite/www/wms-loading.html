@@ -180,6 +180,18 @@
 			border: 1px solid var(--sb-line); background: var(--sb-card); cursor: pointer; }
 		.qc-toggle.on { background: var(--sb-amber-bg, #fdf2e0); color: var(--sb-amber, #b9770e); border-color: var(--sb-amber, #b9770e); }
 		.ccoil .rm { flex: 0 0 auto; background: none; border: none; color: var(--sb-muted); font-size: 20px; cursor: pointer; padding: 0 4px; line-height: 1; }
+		/* RM Movement rows — reuse .ccoil, add per-state accents */
+		.ccoil.rm-done { border-color: var(--sb-green, #2e7d4f); background: #f2f9f4; }
+		.ccoil.rm-pending { border-style: dashed; }
+		.ccoil.rm-flag { border-color: var(--sb-amber, #b9770e); background: #fdf6ec; }
+		.ccoil .tick { flex: 0 0 auto; font-size: 17px; line-height: 1; }
+		.rm-pill { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--sb-pill);
+			border: 1px solid var(--sb-line); background: var(--sb-card); color: var(--sb-muted); margin-left: 6px; }
+		.rm-pill.warn { border-color: var(--sb-amber, #b9770e); color: var(--sb-amber, #b9770e); background: var(--sb-amber-bg, #fdf2e0); }
+		.bin-context .bx-change { flex: 0 0 auto; font-size: 12px; font-weight: 700; padding: 7px 12px; border-radius: var(--sb-pill);
+			border: 1px solid var(--sb-line); background: var(--sb-card); cursor: pointer; }
+		.rm-progress { height: 6px; border-radius: 4px; background: var(--sb-line); overflow: hidden; margin-top: 8px; }
+		.rm-progress > i { display: block; height: 100%; background: var(--sb-green, #2e7d4f); }
 	</style>
 </head>
 <body class="sb-body">
@@ -291,6 +303,16 @@
 					<span class="tt-title">Inventory Count</span>
 					<span class="tt-sub">Map coils to bins — scan a bin, then its coils</span>
 				</button>
+				<button class="task-tile" id="task-rm_dispatch">
+					<span class="tt-emoji">🏭</span>
+					<span class="tt-title">Gate Dispatch</span>
+					<span class="tt-sub">Send coils to a line — scan the line, then each coil</span>
+				</button>
+				<button class="task-tile" id="task-rm_receive">
+					<span class="tt-emoji">🎯</span>
+					<span class="tt-title">Line Receipt</span>
+					<span class="tt-sub">Receive coils at your line — scan each one</span>
+				</button>
 			</div>
 			<div id="task-empty" class="empty hide" style="text-align:center;padding:34px 12px;">
 				No tasks assigned — contact your supervisor.
@@ -324,6 +346,62 @@
 			</div>
 			<div id="count-list" style="margin-top:14px;"></div>
 		</section>
+
+		<!-- SCREEN 7: RM Movement — gate: scan the destination line -->
+		<section id="screen-rm-dest" class="hide">
+			<div class="sb-card" style="padding:14px;">
+				<div class="sb-label">Gate Dispatch</div>
+				<h2 class="sb-h2" style="margin:.15em 0 .6em;">Scan the destination line</h2>
+				<form id="rmd-form" class="scan-row" autocomplete="off" action="javascript:void(0)">
+					<input class="scan-input" id="rmd-input" placeholder="Scan or type line code" autocomplete="off"
+						autocapitalize="characters" enterkeyhint="go" inputmode="text" />
+					<button type="submit" class="scan-go" id="rmd-go" aria-label="Open destination">&rarr;</button>
+				</form>
+				<div class="hint">Scan the line the coils are going to — then scan each coil onto the trolley.</div>
+			</div>
+		</section>
+
+		<!-- SCREEN 8: RM Movement — gate: scan coils out to that line -->
+		<section id="screen-rm-dispatch" class="hide">
+			<div id="rmd-context" class="bin-context"></div>
+			<div class="sb-card" style="padding:14px;margin-top:12px;">
+				<form id="rmc-form" class="scan-row" autocomplete="off" action="javascript:void(0)">
+					<input class="scan-input" id="rmc-input" placeholder="Scan coil" autocomplete="off"
+						autocapitalize="characters" enterkeyhint="go" inputmode="text" />
+					<button type="submit" class="scan-go" id="rmc-go" aria-label="Dispatch coil">&rarr;</button>
+				</form>
+				<div class="hint">Each coil is recorded as you scan it — nothing is lost if you close the app.</div>
+			</div>
+			<div id="rmd-list" style="margin-top:14px;"></div>
+		</section>
+
+		<!-- SCREEN 9: RM Movement — line: which line am I? (asked once, then remembered) -->
+		<section id="screen-rm-line" class="hide">
+			<div class="sb-card" style="padding:14px;">
+				<div class="sb-label">Line Receipt</div>
+				<h2 class="sb-h2" style="margin:.15em 0 .6em;">Scan your line</h2>
+				<form id="rml-form" class="scan-row" autocomplete="off" action="javascript:void(0)">
+					<input class="scan-input" id="rml-input" placeholder="Scan or type your line code" autocomplete="off"
+						autocapitalize="characters" enterkeyhint="go" inputmode="text" />
+					<button type="submit" class="scan-go" id="rml-go" aria-label="Open line">&rarr;</button>
+				</form>
+				<div class="hint">Asked once — this device remembers your line until you change it.</div>
+			</div>
+		</section>
+
+		<!-- SCREEN 10: RM Movement — line: receive against the expected list -->
+		<section id="screen-rm-receive" class="hide">
+			<div id="rmr-context" class="bin-context"></div>
+			<div class="sb-card" style="padding:14px;margin-top:12px;">
+				<form id="rmr-form" class="scan-row" autocomplete="off" action="javascript:void(0)">
+					<input class="scan-input" id="rmr-input" placeholder="Scan coil" autocomplete="off"
+						autocapitalize="characters" enterkeyhint="go" inputmode="text" />
+					<button type="submit" class="scan-go" id="rmr-go" aria-label="Receive coil">&rarr;</button>
+				</form>
+				<div class="hint">Scan each coil as it arrives. Only coils sent to this line can be received here.</div>
+			</div>
+			<div id="rmr-list" style="margin-top:14px;"></div>
+		</section>
 	</div>
 
 	<!-- bottom action bar (coil screen) -->
@@ -337,6 +415,17 @@
 		<button class="sb-btn sb-btn--primary" id="cbtn-save" style="flex:1;">Save &amp; next bin</button>
 	</div>
 
+	<!-- bottom action bar (RM gate dispatch screen) -->
+	<div class="bottombar hide" id="rmd-bottombar">
+		<button class="sb-btn sb-btn--primary" id="rmd-save" style="flex:1;">Save &amp; next line</button>
+	</div>
+
+	<!-- bottom action bar (RM line receipt screen) -->
+	<div class="bottombar hide" id="rmr-bottombar">
+		<button class="sb-btn sb-btn--ghost" id="rmr-refresh" style="flex:1;">&#8635; Refresh</button>
+		<button class="sb-btn sb-btn--primary" id="rmr-save" style="flex:2;">Save</button>
+	</div>
+
 	<!-- generic modal sheet -->
 	<div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
 
@@ -346,7 +435,8 @@
 		const USER = "{{ full_name }}";
 		let DB = null, CFG = { undo_window_seconds: 120, allow_overscan: 0, qr_decode_rule: "Identity", qr_decode_regex: "",
 			bin_picking_enabled: 0, bin_decode_rule: "Identity", bin_decode_regex: "", allow_pick_outside_bin: 0,
-			count_enabled: 0, count_qc_default: "OK", loading_group_mode: "By Shipment", completion_mode: "Whole Truck" };
+			count_enabled: 0, count_qc_default: "OK", loading_group_mode: "By Shipment", completion_mode: "Whole Truck",
+			rm_enabled: 0, rm_received_history_hours: 12 };
 		let PLAN = null;          // current plan/bundle progress + coils (cached)
 		let HOME = { pending: [], loaded: [] };  // last home payload (per-plan or truck groups)
 		let pendingScan = null;   // coil awaiting confirm
@@ -373,12 +463,24 @@
 		window.addEventListener("offline", setNet);
 
 		// ---------- API ----------
+		// A rejected request and an unreachable server are the same `throw` to most of
+		// this app, which is fine when every failure gets queued anyway. RM receipts
+		// are not: a coil the server REFUSED must never be queued and replayed, or the
+		// strict-receipt rule would be undone by the retry. So network failures are
+		// tagged, and only those are treated as "try again later".
 		async function api(method, args) {
-			const res = await fetch("/api/method/" + method, {
-				method: "POST",
-				headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": CSRF },
-				body: JSON.stringify(args || {}),
-			});
+			let res;
+			try {
+				res = await fetch("/api/method/" + method, {
+					method: "POST",
+					headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": CSRF },
+					body: JSON.stringify(args || {}),
+				});
+			} catch (netErr) {
+				const e = new Error("No connection");
+				e.network = true;
+				throw e;
+			}
 			if (!res.ok) {
 				let msg = "Request failed (" + res.status + ")";
 				try { const j = await res.json(); msg = (j._server_messages ? JSON.parse(j._server_messages).map(m => JSON.parse(m).message).join("\n") : j.message) || msg; } catch (e) {}
@@ -424,10 +526,17 @@
 		}
 		function queuedSorted(rows) { return rows.slice().sort((a, b) => (a.queued_at || 0) - (b.queued_at || 0)); }
 
+		// syncQueue is reachable from four triggers (the online listener, the queue
+		// sheet's Sync now, the account sheet, and each flow's Save). Two overlapping
+		// runs send the same events twice; the server is idempotent on client_event_id,
+		// but only by an exists()-then-insert check that is not a lock, so the loser
+		// hits a unique-key error. Cheaper to not race in the first place.
+		let SYNCING = false;
 		async function syncQueue() {
-			if (!navigator.onLine || !DB) return;
+			if (!navigator.onLine || !DB || SYNCING) return;
 			const rows = queuedSorted(await idbAll("queue"));   // replay oldest-first (load before its undo)
 			if (!rows.length) return;
+			SYNCING = true;
 			try {
 				const results = await api("sbx_wmslite.api.submit_offline_queue", { events: JSON.stringify(rows) });
 				const byId = {}; results.forEach((r) => { byId[r.client_event_id] = r; });
@@ -446,11 +555,13 @@
 				if ($("scrim").classList.contains("show") && $("q-sync")) openQueueSheet();  // refresh popup if open
 				if (PLAN) await reloadCurrent();
 			} catch (e) { /* stay queued; will retry on next online */ }
+			finally { SYNCING = false; }
 		}
 
 		// ---------- offline-queue detail popup (tap the "N queued" badge) ----------
 		const Q_LABELS = { confirm_load: "⬆ Load coil", overscan_add: "⬆ Over-scan add", undo: "↩ Undo load",
-			reject: "⚠ Rejected scan", count_scan: "▤ Count scan", count_remove: "✕ Count remove" };
+			reject: "⚠ Rejected scan", count_scan: "▤ Count scan", count_remove: "✕ Count remove",
+			rm_dispatch: "🏭 Send to line", rm_receive: "🎯 Receive at line", rm_remove: "✕ Undo RM scan" };
 		function qAgo(t) {
 			if (!t) return "";
 			const s = Math.round((Date.now() - t) / 1000);
@@ -460,7 +571,9 @@
 		}
 		function qTruck(e) {
 			if (PLAN && (PLAN.name === e.plan || (PLAN.shipments || []).some((s) => s.plan === e.plan))) return PLAN.truck_number;
-			return e.plan || e.bin_code || "";
+			// `destination` covers the RM events, which carry no plan or bin_code —
+			// without it their queue rows render with a blank subtitle.
+			return e.plan || e.bin_code || e.destination || "";
 		}
 		async function openQueueSheet() {
 			const rows = queuedSorted(await idbAll("queue"));
@@ -543,6 +656,13 @@
 					"They stay on this device and will sync under the next person who logs in."
 				: "Log out of WMS Core?";
 			if (!confirm(msg)) return;
+			// Forget this device's remembered task and RM line. They are per-person
+			// choices, and a shared HHT would otherwise drop the next shift straight
+			// into the previous operator's line and start recording receipts there.
+			try {
+				await idbDel("kv", "rm_line");
+				await idbDel("kv", "task");
+			} catch (e) { /* never block a sign-out on housekeeping */ }
 			try {
 				await fetch("/api/method/logout", {
 					method: "POST", credentials: "same-origin",
@@ -1244,6 +1364,15 @@
 		function showTaskPicker() {
 			$("task-empty").classList.add("hide");
 			document.querySelector(".task-pick").classList.remove("hide");
+			// Show only the tiles this user may actually use. Without this every
+			// operator sees all four and a tap on one they lack ends in a bare
+			// "Not permitted" from the server — the UI offering work it knows will
+			// be refused. TASKS comes from my_tasks, which applies both the role
+			// check and the feature flag.
+			document.querySelectorAll(".task-tile").forEach((el) => {
+				const key = el.id.replace(/^task-/, "");
+				el.classList.toggle("hide", !TASKS.includes(key));
+			});
 			showScreen("tasks");
 		}
 		function showNoTasks() {
@@ -1251,9 +1380,21 @@
 			$("task-empty").classList.remove("hide");
 			showScreen("tasks");
 		}
+		// Table-driven: a task whose key isn't listed here would silently fall through
+		// to goHome() — the truck-loading screen — which an RM-only operator has no
+		// permission to use. routeInitial auto-starts a single-task user, so that
+		// dead-end would be the FIRST thing they saw.
+		const TASK_ENTRY = {
+			loading: () => goHome(),
+			count: () => goCountBin(),
+			rm_dispatch: () => goRmDest(),
+			rm_receive: () => goRmLine(),
+		};
 		function startTask(task) {
+			const enter = TASK_ENTRY[task];
+			if (!enter) { showTaskPicker(); return; }
 			idbPut("kv", { k: "task", v: task });
-			if (task === "count") goCountBin(); else goHome();
+			enter();
 		}
 
 		// ---------- INVENTORY COUNT ----------
@@ -1386,16 +1527,332 @@
 			goCountBin();
 		}
 
+		// ---------- RM MOVEMENT (gate -> line) ----------
+		// RM = { destination, coils: [...] } for the gate leg, or
+		//      { destination, expected: [...], received: [...] } for the line leg.
+		let RM = null;
+		const RM_RENDER_CAP = 80;
+
+		// Every RM event carries the DEVICE clock as occurred_at. The server stamps its
+		// own clock on the ledger, but it needs to know WHEN the scan happened to order
+		// a replayed event against stored state — a dispatch that syncs an hour late
+		// must not overwrite a receipt that happened in between.
+		function rmStamp() { return new Date().toISOString().slice(0, 19).replace("T", " "); }
+
+		// ---- gate leg ----
+		function goRmDest() {
+			RM = null;
+			$("rmd-input").value = "";
+			showScreen("rm-dest");
+			setTimeout(() => $("rmd-input").focus(), 120);
+		}
+
+		async function handleRmDestScan(raw) {
+			raw = (raw || "").trim(); if (!raw) return;
+			$("rmd-input").value = "";
+			if (navigator.onLine) {
+				try {
+					const r = await api("sbx_wmslite.rm_api.rm_open_destination", { raw_location: raw });
+					RM = { destination: r.destination, coils: (r.coils || []).map((c) => ({ ...c, existing: 1 })) };
+				} catch (e) { banner(e.message, "fail"); return; }
+			} else {
+				RM = { destination: decodeBinLocal(raw), coils: [] };
+				banner("Offline — dispatching to " + RM.destination, "info");
+			}
+			renderRmDispatch();
+			showScreen("rm-dispatch");
+			setTimeout(() => $("rmc-input").focus(), 120);
+		}
+
+		function renderRmDispatch() {
+			if (!RM) return;
+			const n = RM.coils.length;
+			$("rmd-context").innerHTML =
+				'<div style="flex:1;min-width:0;"><div class="bx-code">' + esc(RM.destination) + '</div>' +
+				'<div class="bx-loc">' + n + ' coil' + (n === 1 ? '' : 's') + ' in transit to this line</div></div>';
+			const list = $("rmd-list");
+			const coils = RM.coils.slice().reverse();   // newest on top
+			const shown = coils.slice(0, RM_RENDER_CAP);
+			let html = shown.map((x) => {
+				const code = esc(x.coil_barcode);
+				const meta = [x.material_grade, x.weight ? x.weight + " kg" : "",
+					x.rerouted_from ? "re-routed from " + x.rerouted_from
+						: (x.existing ? "already in transit" : (x.rm_source_bin ? "from " + x.rm_source_bin : ""))]
+					.filter(Boolean).map(esc).join(" · ");
+				return '<div class="ccoil' + (x.rerouted_from ? " rm-flag" : "") + '" data-coil="' + code + '">' +
+					'<div style="flex:1;min-width:0;"><div class="code">' + code + '</div>' +
+					(meta ? '<div class="meta">' + meta + '</div>' : '') + '</div>' +
+					'<button class="rm" data-coil="' + code + '" aria-label="Remove">✕</button></div>';
+			}).join("");
+			if (coils.length > RM_RENDER_CAP) html += '<div class="empty">… and ' + (coils.length - RM_RENDER_CAP) + ' more</div>';
+			list.innerHTML = html || '<div class="empty">No coils sent to this line yet.</div>';
+			list.querySelectorAll(".rm").forEach((el) => el.onclick = () => rmUndoDispatch(el.getAttribute("data-coil")));
+		}
+
+		async function handleRmCoilScan(raw) {
+			raw = (raw || "").trim(); if (!raw || !RM) return;
+			$("rmc-input").value = "";
+			const coilId = decodeInventoryBarcode(raw);
+			if (!coilId) return banner("Couldn't read that coil", "fail");
+			if (RM.coils.some((x) => x.coil_barcode === coilId)) {
+				banner("Already sent to this line: " + coilId, "info");
+				if (navigator.vibrate) navigator.vibrate(30);
+				return;
+			}
+			const cid = uuid();
+			const occurred = rmStamp();
+			const row = { coil_barcode: coilId, cid: cid, raw: raw };
+			RM.coils.push(row);
+			renderRmDispatch();
+			banner("✅ Sent " + coilId, "pass");
+			const evt = { type: "rm_dispatch", destination: RM.destination, raw_qr: raw,
+				coil_barcode: coilId, occurred_at: occurred, client_event_id: cid };
+			if (navigator.onLine) {
+				try {
+					const r = await api("sbx_wmslite.rm_api.rm_dispatch", {
+						destination: RM.destination, raw_qr: raw, client_event_id: cid, occurred_at: occurred });
+					if (r.coil_id) row.coil_barcode = r.coil_id;
+					if (r.rerouted_from) { row.rerouted_from = r.rerouted_from; banner("Re-routed from " + r.rerouted_from, "info"); }
+					if (r.already_in_transit) row.existing = 1;
+					if (r.superseded) { row.existing = 1; banner(r.message || "Already received", "info"); }
+					if (r.rm_source_bin) row.rm_source_bin = r.rm_source_bin;
+					if (r.material_grade) row.material_grade = r.material_grade;
+					if (r.weight) row.weight = r.weight;
+					renderRmDispatch();
+				} catch (e) { await enqueue(evt); }
+			} else {
+				await enqueue(evt);
+			}
+			$("rmc-input").focus();
+		}
+
+		async function rmUndoDispatch(coil) {
+			const idx = RM.coils.findIndex((x) => x.coil_barcode === coil);
+			if (idx < 0) return;
+			const row = RM.coils[idx];
+			if (row.existing && !row.cid) {
+				// Dispatched in an earlier session — undoing it here would be a surprise.
+				banner("Sent earlier — undo it from the console", "info");
+				return;
+			}
+			RM.coils.splice(idx, 1);
+			renderRmDispatch();
+			banner("Removed " + coil, "info");
+			// Still sitting in the queue? Then it never reached the server — just drop it.
+			if (row.cid) {
+				const q = await idbGet("queue", row.cid);
+				if (q) { await idbDel("queue", row.cid); await refreshQueueBadge(); return; }
+			}
+			const evt = { type: "rm_remove", coil_barcode: coil, leg: "dispatch",
+				client_event_id: row.cid || uuid() };
+			if (navigator.onLine) {
+				try { await api("sbx_wmslite.rm_api.rm_remove", { coil_barcode: coil, leg: "dispatch", client_event_id: row.cid }); }
+				catch (e) { banner(e.message, "fail"); await enqueue(evt); }
+			} else {
+				await enqueue(evt);
+			}
+		}
+
+		async function rmDispatchFinish() {
+			const dest = RM ? RM.destination : null;
+			await syncQueue();
+			if (dest && navigator.onLine) {
+				try { await api("sbx_wmslite.rm_api.rm_finish", { destination: dest, leg: "dispatch" }); } catch (e) {}
+			}
+			banner("Saved ✅ — next line", "pass");
+			goRmDest();
+		}
+
+		// ---- line leg ----
+		// The line code is asked once and remembered on the device. It is cleared on
+		// logout: a shared handheld must not hand the next shift the previous line.
+		async function goRmLine(force) {
+			if (!force) {
+				const c = await idbGet("kv", "rm_line");
+				if (c && c.v) return openRmLine(c.v, true);
+			}
+			$("rml-input").value = "";
+			showScreen("rm-line");
+			setTimeout(() => $("rml-input").focus(), 120);
+		}
+
+		async function handleRmLineScan(raw) {
+			raw = (raw || "").trim(); if (!raw) return;
+			$("rml-input").value = "";
+			await openRmLine(raw, false);
+		}
+
+		async function openRmLine(raw, remembered) {
+			const cacheKey = "rm_line_list:" + (remembered ? raw : decodeBinLocal(raw));
+			if (navigator.onLine) {
+				try {
+					const r = await api("sbx_wmslite.rm_api.rm_open_line", { raw_location: raw });
+					RM = { destination: r.destination, expected: r.expected || [],
+						received: r.received_recent || [], recovered_count: r.recovered_count || 0 };
+					await idbPut("kv", { k: "rm_line", v: r.destination });
+					await idbPut("kv", { k: "rm_line_list:" + r.destination, v: RM, t: Date.now() });
+				} catch (e) { banner(e.message, "fail"); return; }
+			} else {
+				// Offline: fall back to the last cached list for this line so the
+				// receiver can still work — receipts queue and replay.
+				const c = await idbGet("kv", cacheKey);
+				if (c) {
+					RM = c.v;
+					banner("📡 Offline — list as of " + qAgo(c.t), "info");
+				} else {
+					RM = { destination: decodeBinLocal(raw), expected: [], received: [] };
+					banner("Offline — no cached list for this line", "info");
+				}
+			}
+			renderRmReceive();
+			showScreen("rm-receive");
+			setTimeout(() => $("rmr-input").focus(), 120);
+		}
+
+		function renderRmReceive() {
+			if (!RM) return;
+			const pending = RM.expected.filter((x) => !x.received).length;
+			const done = RM.expected.length - pending;
+			const pct = RM.expected.length ? Math.round((done / RM.expected.length) * 100) : 0;
+			$("rmr-context").innerHTML =
+				'<div style="flex:1;min-width:0;"><div class="bx-code">' + esc(RM.destination) + '</div>' +
+				'<div class="bx-loc">' + pending + ' to receive' + (done ? ' · ' + done + ' done' : '') +
+				(RM.recovered_count ? ' · ' + RM.recovered_count + ' recovered' : '') + '</div>' +
+				'<div class="rm-progress"><i style="width:' + pct + '%"></i></div></div>' +
+				'<button class="bx-change" id="rmr-change">Change</button>';
+			$("rmr-change").onclick = () => goRmLine(true);
+
+			const rows = RM.expected.slice().sort((a, b) => (a.received ? 1 : 0) - (b.received ? 1 : 0));
+			const shown = rows.slice(0, RM_RENDER_CAP);
+			let html = shown.map((x) => {
+				const code = esc(x.coil_barcode);
+				const bits = [x.material_grade, x.weight ? x.weight + " kg" : ""];
+				if (x.recovered) bits.push("recovered from ledger");
+				else if (x.rm_source_bin && !x.received) bits.push("from " + x.rm_source_bin);
+				if (x.unplanned) bits.push(x.expected_destination ? "was for " + x.expected_destination : "not dispatched");
+				const meta = bits.filter(Boolean).map(esc).join(" · ");
+				const cls = x.received ? (x.unplanned ? " rm-flag" : " rm-done") : " rm-pending";
+				return '<div class="ccoil' + cls + '" data-coil="' + code + '">' +
+					'<div style="flex:1;min-width:0;"><div class="code">' + code +
+					(x.unplanned ? '<span class="rm-pill warn">flagged</span>' : '') + '</div>' +
+					(meta ? '<div class="meta">' + meta + '</div>' : '') + '</div>' +
+					(x.received
+						? '<span class="tick">✅</span><button class="rm" data-coil="' + code + '" aria-label="Undo">✕</button>'
+						: '<span class="rm-pill">pending</span>') +
+					'</div>';
+			}).join("");
+			if (rows.length > RM_RENDER_CAP) html += '<div class="empty">… and ' + (rows.length - RM_RENDER_CAP) + ' more</div>';
+			$("rmr-list").innerHTML = html || '<div class="empty">Nothing in transit to this line 🎉</div>';
+			$("rmr-list").querySelectorAll(".rm").forEach((el) =>
+				el.onclick = () => rmUndoReceive(el.getAttribute("data-coil")));
+		}
+
+		async function handleRmReceiveScan(raw) {
+			raw = (raw || "").trim(); if (!raw || !RM) return;
+			$("rmr-input").value = "";
+			const coilId = decodeInventoryBarcode(raw);
+			if (!coilId) return banner("Couldn't read that coil", "fail");
+			const row = RM.expected.find((x) => x.coil_barcode === coilId);
+			if (row && row.received) {
+				banner("Already received: " + coilId, "info");
+				if (navigator.vibrate) navigator.vibrate(30);
+				return;
+			}
+			// Receipt is strict: only coils on this line's expected list can be scanned
+			// in. Refused here as well as on the server so the operator is told
+			// immediately and offline, and so nothing a refusal applies to ever reaches
+			// the queue. Coils already received at this line earlier get their own
+			// message — "not sent here" would be wrong and would send someone hunting.
+			if (!row) {
+				const earlier = (RM.received || []).find((x) => x.coil_barcode === coilId);
+				banner(earlier ? "Already received at this line: " + coilId
+					: "⛔ Not sent to this line: " + coilId, "fail");
+				return;
+			}
+			const cid = uuid();
+			const occurred = rmStamp();
+			banner("✅ Received " + coilId, "pass");
+			row.received = 1; row.cid = cid; row.raw = raw;
+			renderRmReceive();
+			const evt = { type: "rm_receive", destination: RM.destination, raw_qr: raw,
+				coil_barcode: coilId, occurred_at: occurred, client_event_id: cid };
+			if (navigator.onLine) {
+				try {
+					const r = await api("sbx_wmslite.rm_api.rm_receive", {
+						destination: RM.destination, raw_qr: raw, client_event_id: cid, occurred_at: occurred });
+					if (r.coil_id) row.coil_barcode = r.coil_id;
+					row.unplanned = r.unplanned ? 1 : 0;
+					row.expected_destination = r.rm_expected_destination || "";
+					if (r.conflict) banner("⚠ This coil had been re-routed to " + (r.rm_expected_destination || "another line"), "info");
+					if (r.material_grade) row.material_grade = r.material_grade;
+					if (r.weight) row.weight = r.weight;
+					renderRmReceive();
+				} catch (e) {
+					if (e.network) {
+						await enqueue(evt);          // no signal — replay it later
+					} else {
+						// The server refused it. Queueing would replay the scan as an
+						// offline event, which is exactly the path that is allowed to
+						// accept-and-flag — so retrying would launder a rejection into
+						// an accepted receipt. Undo the optimistic tick instead.
+						row.received = 0; row.cid = null;
+						renderRmReceive();
+						banner(e.message, "fail");
+						if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
+					}
+				}
+			} else {
+				await enqueue(evt);
+			}
+			await idbPut("kv", { k: "rm_line_list:" + RM.destination, v: RM, t: Date.now() });
+			$("rmr-input").focus();
+		}
+
+		async function rmUndoReceive(coil) {
+			const row = RM.expected.find((x) => x.coil_barcode === coil);
+			if (!row || !row.received) return;
+			row.received = 0;
+			renderRmReceive();
+			banner("Undone " + coil, "info");
+			if (row.cid) {
+				const q = await idbGet("queue", row.cid);
+				if (q) { await idbDel("queue", row.cid); await refreshQueueBadge(); return; }
+			}
+			const evt = { type: "rm_remove", coil_barcode: coil, leg: "receive",
+				client_event_id: row.cid || uuid() };
+			if (navigator.onLine) {
+				try { await api("sbx_wmslite.rm_api.rm_remove", { coil_barcode: coil, leg: "receive", client_event_id: row.cid }); }
+				catch (e) { banner(e.message, "fail"); row.received = 1; renderRmReceive(); return; }
+			} else {
+				await enqueue(evt);
+			}
+		}
+
+		async function rmReceiveFinish() {
+			const dest = RM ? RM.destination : null;
+			await syncQueue();
+			if (dest && navigator.onLine) {
+				try {
+					const r = await api("sbx_wmslite.rm_api.rm_finish", { destination: dest, leg: "receive" });
+					banner(r.in_transit ? "Saved ✅ — " + r.in_transit + " still to arrive" : "Saved ✅ — all received", "pass");
+					await openRmLine(dest, true);
+					return;
+				} catch (e) {}
+			}
+			banner("Saved ✅", "pass");
+		}
+
 		// ---------- screens / sheet ----------
+		// Table-driven so adding a screen is one row, not another pair of hand-written
+		// toggle lines that the next module has to remember to add.
+		const SCREENS = ["home", "coils", "summary", "tasks", "count-bin", "count",
+			"rm-dest", "rm-dispatch", "rm-line", "rm-receive"];
+		const BOTTOMBARS = { coils: "bottombar", count: "count-bottombar",
+			"rm-dispatch": "rmd-bottombar", "rm-receive": "rmr-bottombar" };
 		function showScreen(which) {
-			$("screen-home").classList.toggle("hide", which !== "home");
-			$("screen-coils").classList.toggle("hide", which !== "coils");
-			$("screen-summary").classList.toggle("hide", which !== "summary");
-			$("screen-tasks").classList.toggle("hide", which !== "tasks");
-			$("screen-count-bin").classList.toggle("hide", which !== "count-bin");
-			$("screen-count").classList.toggle("hide", which !== "count");
-			$("bottombar").classList.toggle("hide", which !== "coils");
-			$("count-bottombar").classList.toggle("hide", which !== "count");
+			SCREENS.forEach((s) => $("screen-" + s).classList.toggle("hide", which !== s));
+			Object.entries(BOTTOMBARS).forEach(([screen, bar]) =>
+				$(bar).classList.toggle("hide", which !== screen));
 		}
 		function openSheet(html) { $("sheet").innerHTML = html; $("scrim").classList.add("show"); }
 		function closeSheet() { $("scrim").classList.remove("show"); $("sheet").innerHTML = ""; }
@@ -1445,6 +1902,23 @@
 		autoScanWatch($("cbin-input"), handleCountBinScan);
 		autoScanWatch($("ccoil-input"), handleCountCoilScan);
 		$("cbtn-save").onclick = countFinish;
+
+		// RM Movement wiring — all four inputs get the same three triggers every other
+		// scan input has: form submit (soft-keyboard Go), keydown Enter (scanners that
+		// emit Enter without submitting), and the wedge burst watcher (scanners that
+		// emit no Enter at all).
+		$("task-rm_dispatch").onclick = () => startTask("rm_dispatch");
+		$("task-rm_receive").onclick = () => startTask("rm_receive");
+		[["rmd", handleRmDestScan], ["rmc", handleRmCoilScan],
+		 ["rml", handleRmLineScan], ["rmr", handleRmReceiveScan]].forEach(([id, handler]) => {
+			$(id + "-form").addEventListener("submit", (e) => { e.preventDefault(); handler($(id + "-input").value); });
+			$(id + "-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); handler($(id + "-input").value); } });
+			autoScanWatch($(id + "-input"), handler);
+		});
+		$("rmd-save").onclick = rmDispatchFinish;
+		$("rmr-save").onclick = rmReceiveFinish;
+		$("rmr-refresh").onclick = () => { if (RM) openRmLine(RM.destination, true); };
+
 		$("qbadge").onclick = openQueueSheet;   // tap the "N queued" badge → offline-queue detail popup
 		$("uchip").onclick = openUserSheet;     // tap the initials chip → account + sign out
 
