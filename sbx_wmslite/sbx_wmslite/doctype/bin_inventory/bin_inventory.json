@@ -34,6 +34,7 @@
   "rm_unplanned",
   "rm_expected_destination",
   "section_meta",
+  "coil_qr_raw",
   "source",
   "scanned_at",
   "updated_at"
@@ -105,7 +106,7 @@
    "label": "Size"
   },
   {
-   "description": "Optional — used to order the picker's walk path.",
+   "description": "Optional \u2014 used to order the picker's walk path.",
    "fieldname": "zone",
    "fieldtype": "Data",
    "label": "Zone"
@@ -191,7 +192,7 @@
   },
   {
    "default": "0",
-   "description": "Received at a line with no matching in-transit record — either never dispatched, or dispatched somewhere else. Informational: the line is never blocked.",
+   "description": "Received at a line with no matching in-transit record \u2014 either never dispatched, or dispatched somewhere else. Informational: the line is never blocked.",
    "fieldname": "rm_unplanned",
    "fieldtype": "Check",
    "in_standard_filter": 1,
@@ -218,7 +219,7 @@
    "read_only": 1
   },
   {
-   "description": "Scan timestamp from the source feed. The latest scan wins — an older scan never overwrites a newer one.",
+   "description": "Scan timestamp from the source feed. The latest scan wins \u2014 an older scan never overwrites a newer one.",
    "fieldname": "scanned_at",
    "fieldtype": "Datetime",
    "label": "Scanned At",
@@ -228,6 +229,13 @@
    "fieldname": "updated_at",
    "fieldtype": "Datetime",
    "label": "Updated At",
+   "read_only": 1
+  },
+  {
+   "description": "The most recent full scan string for this coil, before extraction. Reconciliation only \u2014 coil_barcode is the identity.",
+   "fieldname": "coil_qr_raw",
+   "fieldtype": "Data",
+   "label": "Coil QR (raw)",
    "read_only": 1
   }
  ],

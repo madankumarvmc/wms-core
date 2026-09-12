@@ -26,6 +26,7 @@
   "bin_picking_enabled",
   "bin_decode_rule",
   "bin_decode_regex",
+  "bin_validation_enabled",
   "column_break_bin",
   "allow_pick_outside_bin",
   "mark_picked_on_load",
@@ -93,11 +94,11 @@
   },
   {
    "default": "Identity",
-   "description": "Identity = scanned QR equals the coil ID. Regex Extract = pull coil ID from capture group 1.",
+   "description": "Identity = scanned QR equals the coil ID. Regex Extract = pull coil ID from capture group 1. Inventory Barcode = extract the batch code from the plant's descriptive QR (the handheld uses the same rule offline; tests/test_decode_parity.py keeps them in step).",
    "fieldname": "qr_decode_rule",
    "fieldtype": "Select",
    "label": "QR Decode Rule",
-   "options": "Identity\nRegex Extract"
+   "options": "Identity\nRegex Extract\nInventory Barcode"
   },
   {
    "depends_on": "eval:doc.qr_decode_rule=='Regex Extract'",
@@ -147,7 +148,7 @@
   },
   {
    "default": "0",
-   "description": "OFF (default): a fully-loaded plan waits at 'Ready to Complete' — no SAP goods-issue (PGI/GRN) and no T1 loading pushes fire until the operator presses Complete on the handheld (or a supervisor completes it from the console). ON: the plan auto-completes and pushes the moment every coil is loaded.",
+   "description": "OFF (default): a fully-loaded plan waits at 'Ready to Complete' \u2014 no SAP goods-issue (PGI/GRN) and no T1 loading pushes fire until the operator presses Complete on the handheld (or a supervisor completes it from the console). ON: the plan auto-completes and pushes the moment every coil is loaded.",
    "fieldname": "auto_complete_on_full_load",
    "fieldtype": "Check",
    "label": "Auto-complete When All Coils Loaded"
@@ -214,7 +215,7 @@
   },
   {
    "default": "0",
-   "description": "Enable the Inventory Count task on the HHT (bin↔coil mapping capture). Requires the Inventory Recorder role.",
+   "description": "Enable the Inventory Count task on the HHT (bin\u2194coil mapping capture). Requires the Inventory Recorder role.",
    "fieldname": "count_enabled",
    "fieldtype": "Check",
    "label": "Enable Inventory Count"
@@ -393,6 +394,13 @@
    "fieldname": "loading_push_max_attempts",
    "fieldtype": "Int",
    "label": "Max Push Attempts"
+  },
+  {
+   "default": "0",
+   "description": "Refuse a scanned location that is not in the WMSLite Bin master. Stops a coil QR or a typo becoming a destination line or a count bin. Turn OFF if the master is missing a label that the floor needs today.",
+   "fieldname": "bin_validation_enabled",
+   "fieldtype": "Check",
+   "label": "Validate Scanned Locations"
   }
  ],
  "index_web_pages_for_search": 1,

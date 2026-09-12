@@ -36,6 +36,7 @@ PREFIX = "__TEST__RM"
 SETTINGS = SettingsGuard(
 	"rm_enabled", "rm_received_history_hours", "rm_unknown_bin",
 	"count_enabled", "qr_decode_rule", "bin_decode_rule",
+	"bin_validation_enabled",
 )
 
 
@@ -47,6 +48,10 @@ def _settings():
 		count_enabled=1,
 		qr_decode_rule="Identity",
 		bin_decode_rule="Identity",
+		# The existing cases scan bare coil codes straight into the endpoints; the
+		# location master is not seeded in tests, so validation stays off except
+		# where a case turns it on.
+		bin_validation_enabled=0,
 	)
 
 
@@ -143,10 +148,15 @@ class TestRMMovement(FrappeTestCase):
 		self.assertEqual(self._bi(coil, "rm_cycle"), 1)  # same movement, not a new one
 
 	def test_dispatch_different_destination_reroutes(self):
+		"""A re-route still keeps the same trip — once it has been confirmed.
+
+		The confirmation itself is covered in TestRMReroute; this case is about what
+		the re-route does to the coil, not about being asked.
+		"""
 		coil = self._coil()
 		self._seed(coil)
 		rm_api.rm_dispatch(LINE_A, coil, client_event_id="r1")
-		r = rm_api.rm_dispatch(LINE_B, coil, client_event_id="r2")
+		r = rm_api.rm_dispatch(LINE_B, coil, client_event_id="r2", confirm_reroute=1)
 		self.assertEqual(r.get("rerouted_from"), LINE_A)
 		self.assertEqual(self._bi(coil, "rm_destination"), LINE_B)
 		self.assertEqual(self._bi(coil, "rm_cycle"), 1)  # a redirect, not a new trip
@@ -450,7 +460,8 @@ class TestRMMovement(FrappeTestCase):
 		coil = self._coil()
 		self._seed(coil)
 		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
-		rm_api.rm_dispatch(LINE_B, coil, client_event_id="d2")  # gate reroutes, live
+		# Gate re-routes it, live. That is a deliberate act now, so it is confirmed.
+		rm_api.rm_dispatch(LINE_B, coil, client_event_id="d2", confirm_reroute=1)
 		earlier = add_to_date(now_datetime(), minutes=-30)
 		r = rm_api.rm_receive(LINE_A, coil, client_event_id="rc1",
 							  occurred_at=earlier, synced_offline=1)
@@ -740,3 +751,185 @@ class TestRMMovement(FrappeTestCase):
 		out = rm_api.rm_finish(LINE_A, "dispatch")
 		self.assertEqual(out["in_transit"], 1)
 		self.assertEqual(out["received"], 1)
+
+
+class TestRMCoilIdentity(FrappeTestCase):
+	"""The scanned QR and the stored coil must resolve to the same thing.
+
+	This is the bug that blocked the line: the handheld resolved a scan to its
+	batch code while the server stored the whole descriptive string, so the
+	expected list could never match the operator's own scan.
+	"""
+
+	# The plant's format, with a __TEST__ batch code so nothing here can ever touch
+	# a real coil. An earlier version of this class used a genuine barcode and its
+	# teardown -- LIKE '%<barcode>%' -- deleted the live row it matched. These suites
+	# run against the production database; every fixture must be namespaced.
+	QR = "__TEST__Plant - H.R.COIL-__TEST__RMID1 - 2.500 mm  X 1230 - 26.420 MT- H025001230C2"
+	BATCH = "__TEST__RMID1"
+
+	settings = SettingsGuard("rm_enabled", "count_enabled", "qr_decode_rule",
+							 "bin_decode_rule", "bin_validation_enabled", "rm_unknown_bin")
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		cls.settings.apply(rm_enabled=1, count_enabled=1, qr_decode_rule="Inventory Barcode",
+						   bin_decode_rule="Identity", bin_validation_enabled=0,
+						   rm_unknown_bin="__TEST__RM_UNKNOWN")
+		cls._wipe()
+
+	@classmethod
+	def tearDownClass(cls):
+		cls._wipe()
+		cls.settings.restore()
+		super().tearDownClass()
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		self._wipe()
+
+	@classmethod
+	def _wipe(cls):
+		# Prefix-anchored, never a leading wildcard: a leading % would match any coil
+		# whose barcode merely CONTAINS the fixture code.
+		for dt in ("Coil Transaction", "Bin Inventory"):
+			for n in frappe.get_all(dt, filters={"coil_barcode": ["like", f"{PREFIX}%"]},
+									pluck="name"):
+				frappe.delete_doc(dt, n, force=1, ignore_permissions=True)
+		frappe.db.commit()
+
+	def _bi(self, coil, field):
+		return frappe.db.get_value("Bin Inventory", coil, field)
+
+	def test_scanning_the_full_qr_resolves_to_the_batch_code(self):
+		bin_api.upsert_bin(self.BATCH, {"bin_code": YARD, "weight": 4200}, source="Push API")
+		frappe.db.commit()
+
+		r = rm_api.rm_dispatch(LINE_A, self.QR, client_event_id="id1")
+
+		self.assertEqual(r["coil_id"], self.BATCH)
+		# The coil that moved is the REAL one, not a new row keyed by the QR string.
+		self.assertEqual(self._bi(self.BATCH, "rm_status"), rm_api.IN_TRANSIT)
+		self.assertFalse(frappe.db.exists("Bin Inventory", self.QR))
+		# ...and it kept its warehouse bin, as RM always must.
+		self.assertEqual(self._bi(self.BATCH, "bin_code"), YARD)
+
+	def test_the_full_scan_is_kept_for_reconciliation(self):
+		bin_api.upsert_bin(self.BATCH, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, self.QR, client_event_id="id1")
+
+		self.assertEqual(self._bi(self.BATCH, "coil_qr_raw"), self.QR)
+		txn = frappe.get_all("Coil Transaction",
+							 filters={"coil_barcode": self.BATCH,
+									  "transaction_type": rm_api.TXN_DISPATCH},
+							 fields=["coil_qr_raw"], limit_page_length=1)[0]
+		self.assertEqual(txn.coil_qr_raw, self.QR)
+
+	def test_the_line_receives_a_coil_dispatched_by_full_qr(self):
+		"""End to end: the exact scenario that was refused on the floor."""
+		bin_api.upsert_bin(self.BATCH, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, self.QR, client_event_id="d1")
+
+		expected = rm_api.rm_open_line(LINE_A)["expected"]
+		self.assertEqual([c["coil_barcode"] for c in expected], [self.BATCH])
+
+		r = rm_api.rm_receive(LINE_A, self.QR, client_event_id="r1")
+		self.assertNotIn("unplanned", r)
+		self.assertEqual(self._bi(self.BATCH, "rm_status"), rm_api.RECEIVED)
+
+	def test_typing_the_batch_code_by_hand_also_works(self):
+		"""The operator's fallback when a QR will not scan."""
+		bin_api.upsert_bin(self.BATCH, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, self.QR, client_event_id="d1")
+
+		r = rm_api.rm_receive(LINE_A, self.BATCH, client_event_id="r1")
+		self.assertEqual(r["coil_id"], self.BATCH)
+		self.assertEqual(self._bi(self.BATCH, "rm_status"), rm_api.RECEIVED)
+
+
+class TestRMReroute(FrappeTestCase):
+	"""Re-routing takes a coil off a line that is waiting for it, so it is asked."""
+
+	settings = SettingsGuard("rm_enabled", "qr_decode_rule", "bin_decode_rule",
+							 "bin_validation_enabled", "rm_unknown_bin")
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		cls.settings.apply(rm_enabled=1, qr_decode_rule="Identity", bin_decode_rule="Identity",
+						   bin_validation_enabled=0, rm_unknown_bin="__TEST__RM_UNKNOWN")
+		_cleanup()
+
+	@classmethod
+	def tearDownClass(cls):
+		_cleanup()
+		cls.settings.restore()
+		super().tearDownClass()
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		_cleanup()
+
+	def _coil(self):
+		return f"{PREFIX}_RR_{self._testMethodName}"
+
+	def _bi(self, coil, field):
+		return frappe.db.get_value("Bin Inventory", coil, field)
+
+	def test_live_reroute_asks_first_and_writes_nothing(self):
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+
+		r = rm_api.rm_dispatch(LINE_B, coil, client_event_id="d2")
+
+		self.assertTrue(r["needs_confirm"])
+		self.assertEqual(r["current_destination"], LINE_A)
+		# Nothing moved, and no ledger row was written for the refused attempt.
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_A)
+		self.assertEqual(frappe.db.count("Coil Transaction", {
+			"coil_barcode": coil, "transaction_type": rm_api.TXN_DISPATCH}), 1)
+
+	def test_confirmed_reroute_moves_it(self):
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+
+		r = rm_api.rm_dispatch(LINE_B, coil, client_event_id="d2", confirm_reroute=1)
+
+		self.assertEqual(r["rerouted_from"], LINE_A)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_B)
+		# Same trip, not a new one.
+		self.assertEqual(self._bi(coil, "rm_cycle"), 1)
+		self.assertEqual([c["coil_barcode"] for c in rm_api.rm_open_line(LINE_A)["expected"]], [])
+
+	def test_replayed_reroute_is_not_asked(self):
+		"""An offline scan already happened — there is nobody left to confirm with."""
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+
+		r = rm_api.rm_dispatch(LINE_B, coil, client_event_id="d2", synced_offline=1)
+
+		self.assertNotIn("needs_confirm", r)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_B)
+
+	def test_same_line_rescan_is_not_a_reroute(self):
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+
+		r = rm_api.rm_dispatch(LINE_A, coil, client_event_id="d2")
+
+		self.assertNotIn("needs_confirm", r)
+		self.assertEqual(r.get("already_in_transit"), 1)

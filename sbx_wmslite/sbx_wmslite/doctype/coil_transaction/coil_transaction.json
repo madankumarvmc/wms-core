@@ -33,6 +33,7 @@
   "reversed_by",
   "reversed_at",
   "section_raw",
+  "coil_qr_raw",
   "raw_json"
  ],
  "fields": [
@@ -153,7 +154,7 @@
    "read_only": 1
   },
   {
-   "description": "RM Movement only: the destination line this scan concerns. Kept in its own column (not bin_code) because an RM row is NOT a statement about where the coil physically is — bin_code stays blank so nothing can derive a location from it.",
+   "description": "RM Movement only: the destination line this scan concerns. Kept in its own column (not bin_code) because an RM row is NOT a statement about where the coil physically is \u2014 bin_code stays blank so nothing can derive a location from it.",
    "fieldname": "rm_destination",
    "fieldtype": "Data",
    "in_standard_filter": 1,
@@ -209,6 +210,13 @@
    "fieldtype": "Code",
    "label": "Raw JSON",
    "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "description": "The full string as scanned, before the batch code was extracted. Kept for reconciliation against the source system; coil_barcode is what everything tracks on.",
+   "fieldname": "coil_qr_raw",
+   "fieldtype": "Data",
+   "label": "Coil QR (raw)",
    "read_only": 1
   }
  ],

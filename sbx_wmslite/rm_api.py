@@ -64,7 +64,8 @@ from frappe.utils import add_to_date, cint, get_datetime, now_datetime
 
 from sbx_wmslite import tasks
 from sbx_wmslite.bin_api import RM_IN_TRANSIT
-from sbx_wmslite.decode import decode_bin_code, decode_coil_id
+from sbx_wmslite.decode import decode_coil_id
+from sbx_wmslite.locations import resolve_location
 
 # --- coil states -----------------------------------------------------------
 # IN_TRANSIT is defined in bin_api (the lower-level module, which needs it to guard
@@ -85,11 +86,9 @@ TXN_FLAG_CLEARED = "RM Flag Cleared"
 LEG_TYPES = {"dispatch": TXN_DISPATCH, "receive": TXN_RECEIPT}
 REVERSAL_TYPES = {TXN_DISPATCH: TXN_DISPATCH_REVERSAL, TXN_RECEIPT: TXN_RECEIPT_REVERSAL}
 
-# Suffix on every message that can NEVER succeed on retry. `api._terminal_failure`
-# matches this one marker, so a queued offline event that is permanently doomed is
-# surfaced as dismissable instead of retried forever. A single sentinel beats
-# matching English prose, which breaks the moment a string is translated.
-FINAL = "[rm-final]"
+# Re-exported from `tasks` so `rm_api.FINAL` still resolves for existing callers.
+# It moved because `locations` needs it and rm_api imports locations.
+FINAL = tasks.FINAL
 
 # The RM state carried on Bin Inventory. Snapshotted verbatim into each ledger
 # row's raw_json so an undo restores the exact prior state instead of guessing.
@@ -120,7 +119,7 @@ def _require_line():
 
 def _final(msg):
 	"""Throw a permanent failure — one an offline replay must give up on."""
-	frappe.throw(f"{msg} {FINAL}")
+	tasks.throw_final(msg)
 
 
 def _settings_int(field, default):
@@ -191,6 +190,9 @@ def _ledger(coil, txn_type, txn_key, destination, cycle, payload):
 	ts = now_datetime()
 	txn = frappe.new_doc("Coil Transaction")
 	txn.coil_barcode = coil
+	# The extracted code is the identity; the string it was extracted from is kept
+	# beside it so a row can always be reconciled against the source system.
+	txn.coil_qr_raw = (payload or {}).get("raw_qr") or ""
 	# bin_code deliberately blank: an RM row is not a location statement.
 	txn.scanned_at = ts
 	txn.transaction_type = txn_type
@@ -241,10 +243,13 @@ def _coil_view(coil, st):
 
 
 def _decode_location(raw, label):
-	code = decode_bin_code(raw)
-	if not code:
-		_final(_("Couldn't read the {0} barcode").format(label))
-	return code
+	"""Decode AND validate a scanned location — see `locations.resolve_location`.
+
+	Both legs go through this. Before it validated, a coil QR scanned into "Scan the
+	destination line" became a destination, and the coils sent there were invisible
+	to the line that was actually waiting for them.
+	"""
+	return resolve_location(raw, label)
 
 
 def _decode_coil(raw):
@@ -283,18 +288,22 @@ def rm_open_destination(raw_location):
 
 @frappe.whitelist()
 def rm_dispatch(destination, raw_qr, client_event_id=None, occurred_at=None,
-				synced_offline=0):
+				synced_offline=0, confirm_reroute=0):
 	"""Send one coil to `destination`. Idempotent on `client_event_id`.
 
 	The scan timestamp written to the ledger is the SERVER clock; `occurred_at` (the
 	device clock) is used only to order this scan against stored state, because a
 	replayed event reaches the server long after it happened.
+
+	Sending a coil that is already in transit somewhere else needs
+	`confirm_reroute` — see the branch below.
 	"""
 	_require_gate()
 	destination = (destination or "").strip()
 	if not destination:
 		_final(_("Scan a destination before scanning coils"))
 	coil = _decode_coil(raw_qr)
+	raw_scan = (raw_qr or "").strip()
 	offline = 1 if cint(synced_offline) else 0
 	occurred = get_datetime(occurred_at) if occurred_at else now_datetime()
 
@@ -346,6 +355,19 @@ def rm_dispatch(destination, raw_qr, client_event_id=None, occurred_at=None,
 		fields = {"rm_dispatched_by": user, "rm_dispatched_at": ts}
 		extra = {"already_in_transit": 1}
 	elif cur_status == IN_TRANSIT and cur_dest and cur_dest != destination:
+		# Re-routing: the coil is already on its way to another line. Taking it
+		# silently would remove it from that line's expected list with nothing said
+		# to anybody — the receiver simply waits for a coil that is never coming.
+		# So a LIVE scan has to be confirmed. Nothing is written until it is.
+		#
+		# A replay is exempt: it is a scan that already happened on a device that
+		# was offline, and there is nobody left to ask.
+		if not offline and not cint(confirm_reroute):
+			return {"ok": True, "needs_confirm": True, "coil_id": coil,
+					"current_destination": cur_dest, "destination": destination,
+					"message": _("Coil {0} is already on its way to {1}")
+					.format(coil, cur_dest),
+					**_coil_view(coil, prev)}
 		# Same movement, redirected: keep the cycle and the source bin.
 		fields = {"rm_destination": destination, "rm_dispatched_by": user,
 				  "rm_dispatched_at": ts}
@@ -366,6 +388,7 @@ def rm_dispatch(destination, raw_qr, client_event_id=None, occurred_at=None,
 		)
 		extra = {"source_bin": fields["rm_source_bin"]}
 
+	fields["coil_qr_raw"] = raw_scan
 	existed = _apply_rm(coil, fields, prev)
 	payload = {"leg": "dispatch", "destination": destination, "raw_qr": raw_qr,
 			   "occurred_at": occurred, "synced_offline": offline,
@@ -433,10 +456,20 @@ def rm_open_line(raw_location):
 		if o.coil_barcode in seen:
 			continue
 		st = _state(o.coil_barcode)
-		# Only genuinely missing/diverted rows are recovered — a coil the fast path
-		# legitimately excludes (already Received, or re-routed elsewhere) is not.
+		# Only genuinely missing rows are recovered. The fast path above is the truth
+		# about where a coil is going NOW; this branch exists solely for coils whose
+		# Bin Inventory row went missing under it. So anything the fast path
+		# deliberately left out stays out:
+		#   * already Received;
+		#   * on a later trip than the dispatch we are looking at;
+		#   * re-routed — it is in transit to a DIFFERENT line now, and resurrecting
+		#     it here would put it back on the list of the line it was taken off,
+		#     which is exactly the confusion the re-route confirmation exists to
+		#     prevent. (The destination test was described in this comment before it
+		#     was implemented; the code only checked the first two.)
 		if st and ((st.get("rm_status") or "") == RECEIVED
-				   or cint(st.get("rm_cycle")) != cint(o.rm_cycle)):
+				   or cint(st.get("rm_cycle")) != cint(o.rm_cycle)
+				   or (st.get("rm_destination") or "") != line):
 			continue
 		seen.add(o.coil_barcode)
 		expected.append({
@@ -485,6 +518,7 @@ def rm_receive(destination, raw_qr, client_event_id=None, occurred_at=None,
 	if not destination:
 		_final(_("Scan your line before scanning coils"))
 	coil = _decode_coil(raw_qr)
+	raw_scan = (raw_qr or "").strip()
 	offline = 1 if cint(synced_offline) else 0
 	occurred = get_datetime(occurred_at) if occurred_at else now_datetime()
 
@@ -559,6 +593,7 @@ def rm_receive(destination, raw_qr, client_event_id=None, occurred_at=None,
 		"rm_unplanned": unplanned,
 		"rm_expected_destination": expected_dest,
 	}
+	fields["coil_qr_raw"] = raw_scan
 	existed = _apply_rm(coil, fields, prev)
 	payload = {"leg": "receipt", "destination": destination, "raw_qr": raw_qr,
 			   "occurred_at": occurred, "synced_offline": offline,

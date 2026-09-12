@@ -247,6 +247,9 @@
 
 			<h3 id="rm-gate">5.1 Gate Dispatch</h3>
 			<p>Tap <b>Gate Dispatch</b> on the task picker, then scan the destination line's barcode.</p>
+			<div class="callout warn">Only real location barcodes are accepted. Scanning a
+			<b>coil</b> into this box — easily done, the labels sit side by side — is refused
+			rather than creating a destination nobody is standing at.</div>
 			<figure class="phone"><img src="/assets/sbx_wmslite/manual/14-rm-gate-line.png" alt="Scan the destination line" />
 				<figcaption>Scan the line the coils are going to.</figcaption></figure>
 			<p>Now scan each coil. Every scan is saved immediately — there is no separate confirm step,
@@ -261,8 +264,9 @@
 				<li><b>✕</b> — removes a coil you scanned by mistake.</li>
 				<li><b>Save &amp; next line</b> — finish this line and go straight to scanning the next one.</li>
 			</ul>
-			<div class="callout">Scanning a coil that is already on its way somewhere else simply
-			re-routes it to the line you just scanned.</div>
+			<div class="callout">Scanning a coil that is already on its way to another line
+			asks you first — re-routing takes it off that line's list, so it is a decision,
+			not just a scan. Tap <b>Leave it</b> to cancel.</div>
 
 			<h3 id="rm-line">5.2 Line Receipt</h3>
 			<p>Tap <b>Line Receipt</b> and scan your line. You are asked <b>once</b> — the handheld
@@ -294,6 +298,8 @@
 				<tr><td>Coil already received here</td><td>Told it is already done. No double count.</td></tr>
 				<tr><td>Coil scanned twice at the gate</td><td>Counted once.</td></tr>
 				<tr><td>Gate sends the same coil somewhere else</td><td>It moves to the newest line.</td></tr>
+				<tr><td>Coil already going to another line</td><td>You are asked before it is moved.</td></tr>
+				<tr><td>Something that is not a location scanned as a line</td><td>Refused.</td></tr>
 				<tr><td>No signal</td><td>Keep scanning. Scans queue on the phone and send themselves later.</td></tr>
 			</table>
 			<div class="callout">If a scan was made offline and the situation changed before it reached the
@@ -387,6 +393,7 @@
 				<tr><td>Line</td><td>A production line — the destination of an RM movement.</td></tr>
 				<tr><td>In Transit to Line</td><td>Scanned out at the gate, not yet scanned in at the line.</td></tr>
 				<tr><td>Flagged</td><td>A coil received at a line it was not sent to. The supervisor clears it.</td></tr>
+				<tr><td>Batch code</td><td>The short code inside the coil's QR (e.g. <code>JJG40788</code>). Everything tracks on this; the full label is kept beside it for reconciliation.</td></tr>
 			</table>
 			<p style="margin-top:40px;color:var(--sb-muted);font-size:13px;">WMS Core by StackBox · handheld app <code>/wms-loading</code> · console <code>/wms-console</code></p>
 		</main>

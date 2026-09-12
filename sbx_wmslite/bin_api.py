@@ -12,7 +12,7 @@ import frappe
 from frappe.utils import get_datetime, now_datetime
 
 BIN_FIELDS = ("bin_code", "material_grade", "weight", "zone", "aisle",
-			  "plant", "product", "sized")
+			  "plant", "product", "sized", "coil_qr_raw")
 
 # Coil Transaction types that are NOT statements about where a coil physically is.
 # RM Movement rows deliberately carry no bin_code (a coil in transit keeps its

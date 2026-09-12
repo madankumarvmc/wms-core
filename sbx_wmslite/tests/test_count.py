@@ -29,6 +29,7 @@ SETTINGS = SettingsGuard(
 	"count_qc_default",
 	"qr_decode_rule",
 	"bin_decode_rule",
+	"bin_validation_enabled",
 )
 
 
@@ -36,6 +37,10 @@ def _settings():
 	SETTINGS.apply(
 		count_enabled=1, count_qc_default="OK",
 		qr_decode_rule="Identity", bin_decode_rule="Identity",
+		# These cases scan __TEST__ bins that are deliberately not in the location
+		# master, so validation is off here. It has its own coverage in
+		# test_locations.py, including that count_open_bin honours it.
+		bin_validation_enabled=0,
 	)
 
 

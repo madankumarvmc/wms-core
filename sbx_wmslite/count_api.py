@@ -24,7 +24,8 @@ from frappe.utils import cint, now_datetime
 
 from sbx_wmslite import tasks
 from sbx_wmslite.bin_api import RM_TXN_TYPES, upsert_bin
-from sbx_wmslite.decode import decode_bin_code, decode_coil_id
+from sbx_wmslite.decode import decode_coil_id
+from sbx_wmslite.locations import resolve_location
 
 # Re-exported for callers that imported them from here before the registry existed.
 LOADING_ROLES = tasks.LOADING_ROLES
@@ -78,9 +79,9 @@ def count_open_bin(raw_bin):
 	Bin Inventory truth. `raw_bin` is the raw scan (decoded here, server-side).
 	"""
 	_require_count_role()
-	bin_code = decode_bin_code(raw_bin)
-	if not bin_code:
-		frappe.throw(_("Couldn't read the bin barcode"))
+	# Validated, not merely decoded: a mistyped bin used to open an empty count
+	# silently, which reads exactly like a bin that is genuinely empty.
+	bin_code = resolve_location(raw_bin, _("bin"))
 	rows = frappe.get_all(
 		"Bin Inventory", filters={"bin_code": bin_code},
 		fields=["coil_barcode", "material_grade", "weight", "qc", "scanned_at"],
@@ -107,6 +108,7 @@ def count_scan(bin_code, raw_qr, client_event_id=None, qc=0):
 	_require_count_role()
 	bin_code = (bin_code or "").strip()
 	coil = decode_coil_id(raw_qr)
+	raw_scan = (raw_qr or "").strip()
 	if not bin_code:
 		frappe.throw(_("Scan a bin before scanning coils"))
 	if not coil:
@@ -126,6 +128,8 @@ def count_scan(bin_code, raw_qr, client_event_id=None, qc=0):
 	ts = now_datetime()
 	txn = frappe.new_doc("Coil Transaction")
 	txn.coil_barcode = coil
+	# The extracted code is the identity; the full scan is kept for reconciliation.
+	txn.coil_qr_raw = raw_scan
 	txn.bin_code = bin_code
 	txn.scanned_at = ts
 	txn.transaction_type = "Inventory Count"
@@ -141,7 +145,8 @@ def count_scan(bin_code, raw_qr, client_event_id=None, qc=0):
 
 	# Derive now: only the location fields are set, so grade/weight the SAP feed
 	# supplied are never blanked (upsert_bin's non-empty-field rule).
-	upsert_bin(coil, {"bin_code": bin_code, "scanned_at": ts, "qc": qc}, source="In-app")
+	upsert_bin(coil, {"bin_code": bin_code, "scanned_at": ts, "qc": qc,
+					  "coil_qr_raw": raw_scan}, source="In-app")
 	frappe.db.set_value("Coil Transaction", txn.name,
 						{"processed": 1, "processed_at": ts,
 						 "bin_inventory": coil if frappe.db.exists("Bin Inventory", coil) else None},

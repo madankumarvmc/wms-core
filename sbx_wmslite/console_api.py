@@ -535,6 +535,7 @@ _EXPORT_COLUMNS = {
 		("Dispatched By", "rm_dispatched_by"), ("Dispatched At", "rm_dispatched_at"),
 		("Received By", "rm_received_by"), ("Received At", "rm_received_at"),
 		("Grade", "material_grade"), ("Weight", "weight"),
+		("Scanned Label", "coil_qr_raw"),
 	]),
 	"truck_detail": ("Truck Coils", [
 		("Coil", "coil_barcode"), ("Status", "coil_status"), ("Grade", "material_grade"),
@@ -1041,7 +1042,7 @@ def get_rm_movement(status=None, destination=None, flagged=0, q=None,
 			bi.rm_cycle, bi.rm_unplanned, bi.rm_expected_destination,
 			bi.rm_dispatched_by, bi.rm_dispatched_at,
 			bi.rm_received_by, bi.rm_received_at,
-			bi.material_grade, bi.weight, bi.bin_code
+			bi.material_grade, bi.weight, bi.bin_code, bi.coil_qr_raw
 		FROM `tabBin Inventory` bi
 		WHERE {clause}
 		ORDER BY {stamp} DESC, bi.coil_barcode ASC

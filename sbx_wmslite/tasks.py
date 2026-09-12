@@ -18,6 +18,23 @@ import frappe
 from frappe import _
 from frappe.utils import cint
 
+# Suffix on every message describing a failure that can NEVER succeed on retry.
+# `api._terminal_failure` matches this one marker, so a queued offline event that is
+# permanently doomed is surfaced as dismissable instead of retried forever. A single
+# sentinel beats matching English prose, which breaks the moment a string is
+# translated.
+#
+# It lives here rather than in rm_api because `locations` needs it too, and rm_api
+# imports locations — the same reason bin_api holds RM_IN_TRANSIT. rm_api re-exports
+# it, so `rm_api.FINAL` still resolves.
+FINAL = "[rm-final]"
+
+
+def throw_final(msg):
+	"""Throw a permanent failure — one an offline replay must give up on."""
+	frappe.throw(f"{msg} {FINAL}")
+
+
 SUPERUSERS = {"Loading Supervisor", "System Manager"}
 
 LOADING_ROLES = {"Loading Operator"} | SUPERUSERS

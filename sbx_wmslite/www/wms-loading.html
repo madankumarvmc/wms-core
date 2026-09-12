@@ -950,12 +950,14 @@
 			raw = (raw || "").trim(); if (!raw) return;
 			$("coil-input").value = "";
 			$("armed").innerHTML = ""; $("armed").classList.add("hide");  // clear any prior armed coil
-			const coilId = decodeInventoryBarcode(raw);  // extract batch code from the scanned inventory QR
+			// Used only for the OFFLINE match below. Online, the raw scan goes to the
+			// server and the SERVER decodes — one rule, one identity, one place.
+			const coilId = decodeInventoryBarcode(raw);
 			if (navigator.onLine) {
 				try {
 					const r = isBundle()
-						? await api("sbx_wmslite.truck_api.scan_coil_bundle", { truck: PLAN.truck_number, delivery_date: PLAN.delivery_date || "", raw_qr: coilId })
-						: await api("sbx_wmslite.api.scan_coil", { plan: PLAN.name, raw_qr: coilId });
+						? await api("sbx_wmslite.truck_api.scan_coil_bundle", { truck: PLAN.truck_number, delivery_date: PLAN.delivery_date || "", raw_qr: raw })
+						: await api("sbx_wmslite.api.scan_coil", { plan: PLAN.name, raw_qr: raw });
 					if (r.matched) {
 						const wrong = binMismatch(r.coil.coil_barcode);
 						if (wrong && !CFG.allow_pick_outside_bin) { logRejectMaybe(r.coil.coil_barcode, raw, "wrong_bin"); return banner("Coil belongs to bin " + wrong + " — not this bin", "fail"); }
@@ -1609,8 +1611,23 @@
 				coil_barcode: coilId, occurred_at: occurred, client_event_id: cid };
 			if (navigator.onLine) {
 				try {
-					const r = await api("sbx_wmslite.rm_api.rm_dispatch", {
+					let r = await api("sbx_wmslite.rm_api.rm_dispatch", {
 						destination: RM.destination, raw_qr: raw, client_event_id: cid, occurred_at: occurred });
+					// Already on its way somewhere else — ask before taking it off that
+					// line's expected list. The server wrote nothing yet.
+					if (r.needs_confirm) {
+						const go = await rmConfirmReroute(r.coil_id || coilId, r.current_destination, RM.destination);
+						if (!go) {
+							RM.coils = RM.coils.filter((x) => x !== row);
+							renderRmDispatch();
+							banner("Left on " + r.current_destination, "info");
+							$("rmc-input").focus();
+							return;
+						}
+						r = await api("sbx_wmslite.rm_api.rm_dispatch", {
+							destination: RM.destination, raw_qr: raw, client_event_id: cid,
+							occurred_at: occurred, confirm_reroute: 1 });
+					}
 					if (r.coil_id) row.coil_barcode = r.coil_id;
 					if (r.rerouted_from) { row.rerouted_from = r.rerouted_from; banner("Re-routed from " + r.rerouted_from, "info"); }
 					if (r.already_in_transit) row.existing = 1;
@@ -1651,6 +1668,30 @@
 			} else {
 				await enqueue(evt);
 			}
+		}
+
+		// Re-routing takes a coil off a line that is expecting it, so it is a decision,
+		// not a scan. Resolves true only if the operator explicitly says so.
+		function rmConfirmReroute(coil, from, to) {
+			return new Promise((resolve) => {
+				openSheet(
+					'<h3 class="sb-h3" style="margin:0 0 6px;">Already on its way</h3>' +
+					'<p style="margin:0 0 4px;"><b>' + esc(coil) + '</b></p>' +
+					'<p class="sb-muted" style="margin:0 0 14px;font-size:14px;">Currently going to <b>' +
+						esc(from) + '</b>. Sending it to <b>' + esc(to) + '</b> will take it off that line\'s list.</p>' +
+					'<div style="display:flex;gap:10px;">' +
+					'<button class="sb-btn sb-btn--ghost" id="rr-no" style="flex:1;">Leave it</button>' +
+					'<button class="sb-btn sb-btn--primary" id="rr-yes" style="flex:1;">Send to ' + esc(to) + '</button>' +
+					'</div>');
+				// Deliberately no tap-outside-to-dismiss: this sheet is a decision, and
+				// the other sheets in this app (PIN entry, short-load reasons) do not
+				// have it either — adding a handler to the shared scrim here would give
+				// every one of them accidental dismissal.
+				let done = false;
+				const finish = (v) => { if (done) return; done = true; closeSheet(); resolve(v); };
+				$("rr-no").onclick = () => finish(false);
+				$("rr-yes").onclick = () => finish(true);
+			});
 		}
 
 		async function rmDispatchFinish() {
@@ -1752,18 +1793,23 @@
 			$("rmr-input").value = "";
 			const coilId = decodeInventoryBarcode(raw);
 			if (!coilId) return banner("Couldn't read that coil", "fail");
-			const row = RM.expected.find((x) => x.coil_barcode === coilId);
+			let row = RM.expected.find((x) => x.coil_barcode === coilId);
 			if (row && row.received) {
 				banner("Already received: " + coilId, "info");
 				if (navigator.vibrate) navigator.vibrate(30);
 				return;
 			}
-			// Receipt is strict: only coils on this line's expected list can be scanned
-			// in. Refused here as well as on the server so the operator is told
-			// immediately and offline, and so nothing a refusal applies to ever reaches
-			// the queue. Coils already received at this line earlier get their own
-			// message — "not sent here" would be wrong and would send someone hunting.
-			if (!row) {
+			// Receipt is strict, but the STRICTNESS LIVES ON THE SERVER. This local
+			// check is a convenience, and when it disagrees with the server the server
+			// is right — it holds the identities. Refusing here on a local miss is what
+			// blocked the floor once already: the handheld resolved a scan to its batch
+			// code while the server had stored the whole QR string, so no expected row
+			// ever matched and the scan never even reached the server to be judged.
+			//
+			// Online, a miss therefore falls through and asks. Offline it is refused,
+			// because there is nothing better to go on and a queued scan the server
+			// would reject must not be replayed down the accept-and-flag path.
+			if (!row && !navigator.onLine) {
 				const earlier = (RM.received || []).find((x) => x.coil_barcode === coilId);
 				banner(earlier ? "Already received at this line: " + coilId
 					: "⛔ Not sent to this line: " + coilId, "fail");
@@ -1771,15 +1817,27 @@
 			}
 			const cid = uuid();
 			const occurred = rmStamp();
-			banner("✅ Received " + coilId, "pass");
-			row.received = 1; row.cid = cid; row.raw = raw;
-			renderRmReceive();
+			// An online miss has no row yet — the server is about to decide. Hold the
+			// tick back until it answers rather than showing a green that may be wrong.
+			if (row) {
+				banner("✅ Received " + coilId, "pass");
+				row.received = 1; row.cid = cid; row.raw = raw;
+				renderRmReceive();
+			}
 			const evt = { type: "rm_receive", destination: RM.destination, raw_qr: raw,
 				coil_barcode: coilId, occurred_at: occurred, client_event_id: cid };
 			if (navigator.onLine) {
 				try {
 					const r = await api("sbx_wmslite.rm_api.rm_receive", {
 						destination: RM.destination, raw_qr: raw, client_event_id: cid, occurred_at: occurred });
+					// The server accepted it. If we had no local row, adopt the one it
+					// resolved: our list was keyed on a different form of the same coil.
+					if (!row) {
+						row = RM.expected.find((x) => x.coil_barcode === r.coil_id);
+						if (!row) { row = { coil_barcode: r.coil_id || coilId }; RM.expected.push(row); }
+						row.received = 1; row.cid = cid; row.raw = raw;
+						banner("✅ Received " + (r.coil_id || coilId), "pass");
+					}
 					if (r.coil_id) row.coil_barcode = r.coil_id;
 					row.unplanned = r.unplanned ? 1 : 0;
 					row.expected_destination = r.rm_expected_destination || "";
@@ -1795,7 +1853,7 @@
 						// offline event, which is exactly the path that is allowed to
 						// accept-and-flag — so retrying would launder a rejection into
 						// an accepted receipt. Undo the optimistic tick instead.
-						row.received = 0; row.cid = null;
+						if (row) { row.received = 0; row.cid = null; }
 						renderRmReceive();
 						banner(e.message, "fail");
 						if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
