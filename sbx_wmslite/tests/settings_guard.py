@@ -25,10 +25,53 @@ plaintext, and a field that cannot be read back is left alone rather than guesse
 at.
 """
 
+import os
+
 import frappe
+from frappe.utils import add_to_date, now_datetime
 
 DOCTYPE = "WMSLite Settings"
 _MASK = "*"
+
+# These suites change live settings for the length of a run. Restoring them at the
+# end (below) fixes the AFTERMATH but not the WINDOW: while the suite runs, the
+# site really is configured the way the tests want it.
+#
+# That is not theoretical. During one run an operator dispatched and received a
+# coil at 18:12; the suite had `qr_decode_rule` on Identity and `rm_unknown_bin` on
+# its test placeholder, so the scan was stored under the full QR string in a bin
+# called __TEST__RM_UNKNOWN -- the exact defect the run was verifying the fix for.
+# It had to be repaired by re-running v9 and v10.
+#
+# So: refuse to start if somebody is currently working. Set WMSLITE_ALLOW_LIVE_TESTS=1
+# to override when you know the floor is idle. This is a safety net, not a
+# solution -- the real answer is a test site that is not production.
+LIVE_ACTIVITY_MINUTES = 15
+OVERRIDE_ENV = "WMSLITE_ALLOW_LIVE_TESTS"
+
+
+def _recent_operator_activity():
+	"""Real in-app scans in the last few minutes — somebody is on the floor."""
+	since = add_to_date(now_datetime(), minutes=-LIVE_ACTIVITY_MINUTES)
+	scans = frappe.db.count("Coil Transaction", {
+		"source": "In-app", "creation": (">", since),
+		"coil_barcode": ("not like", "__TEST__%")})
+	loads = frappe.db.count("Coil Load Event", {
+		"creation": (">", since), "truck_number": ("not like", "__TEST__%")})
+	return scans + loads
+
+
+def assert_safe_to_mutate_settings():
+	"""Abort the run rather than reconfigure the site under a working operator."""
+	if os.environ.get(OVERRIDE_ENV):
+		return
+	busy = _recent_operator_activity()
+	if busy:
+		frappe.throw(
+			f"Refusing to run: {busy} live scan(s) in the last {LIVE_ACTIVITY_MINUTES} "
+			f"minutes. These tests reconfigure WMSLite Settings for the duration, so "
+			f"anything scanned now would be recorded under test settings. Wait until "
+			f"the floor is idle, or set {OVERRIDE_ENV}=1 if you know it is.")
 
 
 def _password_fields():
@@ -57,6 +100,7 @@ class SettingsGuard:
 		"""Set the given fields, remembering the site's own values the first time."""
 		doc = frappe.get_doc(DOCTYPE)
 		if not self._saved:
+			assert_safe_to_mutate_settings()
 			passwords = _password_fields()
 			self._saved = {f: self._read(doc, f, passwords) for f in self.fields}
 		for field, value in values.items():
