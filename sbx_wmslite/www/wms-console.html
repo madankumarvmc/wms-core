@@ -75,7 +75,7 @@
 		window.WMS_CSRF = CSRF; // exposed for E2E seeding helpers
 		const $ = (id) => document.getElementById(id);
 		const CAN_USERS = {{ can_manage_users or 0 }};   // WMS Manager / System Manager
-		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["transactions", "Scan Transactions"], ["confirmations", "SAP Confirmations"], ["rm", "RM Movement"], ["saploading", "SAP Loading"], ["saplog", "SAP Log"], ["import", "Import"]]
+		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["binmaster", "Bin Master"], ["transactions", "Scan Transactions"], ["confirmations", "SAP Confirmations"], ["rm", "RM Movement"], ["saploading", "SAP Loading"], ["saplog", "SAP Log"], ["import", "Import"]]
 			.concat(CAN_USERS ? [["users", "Users"]] : []);
 		const GI_PILL = { "Confirmed": "done", "Pending": "open", "Held": "appr", "Sending": "prog", "Failed (Retryable)": "prog", "Failed (Business)": "canc", "Exhausted": "canc", "Not Required": "canc" };
 		const T1_PILL = { "Sent": "done", "Pending": "open", "Failed": "canc", "Not Required": "canc" };
@@ -169,6 +169,7 @@
 				if (state.view === "dashboard") return renderDashboard(c);
 				if (state.view === "trucks") return renderTrucks(c);
 				if (state.view === "inventory") return renderInventory(c);
+				if (state.view === "binmaster") return renderBinMaster(c);
 				if (state.view === "confirmations") return renderConfirmations(c);
 				if (state.view === "saploading") return renderSapLoading(c);
 				if (state.view === "saplog") return renderSapLog(c);
@@ -570,6 +571,56 @@
 			load();
 		}
 
+		// ---------- bin master (WMSLite Bin — the scannable location list) ----------
+		// Distinct from Inventory, which only knows bins that currently hold stock.
+		// With bin_validation_enabled on, a label missing from here is refused on the
+		// handheld, so this screen exists to answer "why won't this bay scan?" and to
+		// let a supervisor fix it without a deploy.
+		let BM = { q: "", disabled: "", start: 0 };
+		async function renderBinMaster(c) {
+			c.innerHTML = '<div class="toolbar">' +
+				'<input id="bm-q" placeholder="Bin code starts with…" value="' + esc(BM.q) + '" />' +
+				'<select id="bm-disabled"><option value="">Active and disabled</option><option value="0">Active only</option><option value="1">Disabled only</option></select>' +
+				'<span style="flex:1;"></span>' + exportBtn("bm-x") +
+				'</div><div id="bm-table"></div><div class="pager" id="bm-pg"></div>' +
+				'<div class="sb-card" style="padding:20px;max-width:620px;margin-top:22px;">' +
+				'<div class="sb-label">Bulk update</div><h2 class="sb-h2" style="margin:.2em 0 .6em;">Update from file</h2>' +
+				'<p class="sb-muted">Download the list above as Excel, add your new location codes to the bottom, and upload it back here. ' +
+				'Codes that aren\'t in the master yet are added; codes that are get their zone, aisle and flags updated. ' +
+				'<b>Nothing is ever deleted</b> — to take a bay out of use, set its Disabled column to 1 rather than removing the row.</p>' +
+				'<p class="sb-muted">Codes are stored exactly as typed, because they have to match what is printed on the label.</p>' +
+				'<input type="file" id="bm-file" accept=".csv,.xlsx" style="margin:12px 0;" />' +
+				'<div id="bm-out"></div></div>';
+			$("bm-disabled").value = BM.disabled;
+
+			let seq = 0;   // drop a stale response that lands after a newer one
+			const load = async () => {
+				const mine = ++seq;
+				busy("bm-table", "bm-pg");
+				const d = await api("sbx_wmslite.console_api.get_bin_master",
+					{ q: BM.q, disabled: BM.disabled, start: BM.start });
+				if (mine !== seq) return;
+				$("bm-table").innerHTML = '<table class="grid"><thead><tr><th>Bin Code</th><th>Zone</th><th>Aisle</th><th>Line</th><th>Status</th><th>Source</th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td>' + esc(r.zone || "") + '</td><td>' + esc(r.aisle || "") +
+						'</td><td>' + (r.is_line ? "Yes" : "") +
+						'</td><td>' + (r.disabled ? '<span class="pill canc">Disabled</span>' : '<span class="pill done">Active</span>') +
+						'</td><td class="sb-muted">' + esc(r.source || "") + '</td></tr>').join("") :
+						'<tr><td colspan="6" class="sb-muted">No locations match.</td></tr>') + '</tbody></table>';
+				pager("bm-pg", d, (s) => { BM.start = s; load(); });
+			};
+
+			onExport("bm-x", () => exportUrl("bin_master", { q: BM.q, disabled: BM.disabled }));
+			$("bm-q").oninput = () => { clearTimeout(window._bmd); window._bmd = setTimeout(() => { BM.q = $("bm-q").value; BM.start = 0; load(); }, 300); };
+			$("bm-disabled").onchange = () => { BM.disabled = $("bm-disabled").value; BM.start = 0; load(); };
+			// Same upload pipeline as the Import tab, pointed at this card's containers.
+			// onDone refreshes the table so the new codes appear without a nav round trip.
+			$("bm-file").onchange = (e) => {
+				imp = { dataset: "Bin Master", out: "bm-out", prev: "bm-prev", onDone: () => { BM.start = 0; load(); } };
+				uploadFile(e);
+			};
+			load();
+		}
+
 		// ---------- scan transactions (the append-only Coil Transaction feed) ----------
 		// 260k+ rows shared by two very different populations, so the source toggle
 		// is the primary control: "SAP Feed" vs "Inventory Count" answer different questions.
@@ -683,13 +734,18 @@
 				'<div class="row" style="display:flex;gap:8px;margin-top:18px;"><button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Close</button></div>');
 		}
 
-		const IMPORT_DATASETS = ["Loading Plan", "Bin Inventory"];
+		const IMPORT_DATASETS = ["Loading Plan", "Bin Inventory", "Bin Master"];
+		const IMPORT_HELP = {
+			"Loading Plan": "One row per coil. Required: <b>truck_number</b>, <b>coil_barcode</b>. Optional: sap_plan_id, material_grade, weight.",
+			"Bin Inventory": "One row per coil. Required: <b>coil_barcode</b>, <b>bin_code</b>. Optional: material_grade, weight, zone, aisle.",
+			"Bin Master": "One row per location. Required: <b>bin_code</b>. Optional: zone, aisle, is_line, disabled. Adds codes that aren't in the master yet and updates the ones that are — nothing is ever deleted.",
+		};
+		// What the finished-import line counts, per dataset.
+		const IMPORT_UNIT = { "Loading Plan": "plan", "Bin Inventory": "coil", "Bin Master": "location" };
+
 		async function renderImport(c) {
-			imp = { dataset: "Loading Plan" };
-			const help = {
-				"Loading Plan": "One row per coil. Required: <b>truck_number</b>, <b>coil_barcode</b>. Optional: sap_plan_id, material_grade, weight.",
-				"Bin Inventory": "One row per coil. Required: <b>coil_barcode</b>, <b>bin_code</b>. Optional: material_grade, weight, zone, aisle.",
-			};
+			imp = { dataset: "Loading Plan", out: "imp-out", prev: "imp-prev" };
+			const help = IMPORT_HELP;
 			c.innerHTML =
 				'<div class="sb-card" style="padding:20px;max-width:620px;">' +
 				'<div class="sb-label">Upload</div><h2 class="sb-h2" style="margin:.2em 0 .6em;">Import data</h2>' +
@@ -705,9 +761,12 @@
 			$("imp-dataset").onchange = (e) => { imp.dataset = e.target.value; $("imp-help").innerHTML = help[imp.dataset]; tplLink(); $("imp-out").innerHTML = ""; };
 			$("imp-file").onchange = uploadFile;
 		}
+		// The upload pipeline is shared: the Import tab drives it into #imp-out, and
+		// the Bin Master tab into its own card. `imp.out` / `imp.prev` name the two
+		// containers so neither view needs its own copy of this flow.
 		async function uploadFile(e) {
 			const file = e.target.files[0]; if (!file) return;
-			const out = $("imp-out"); out.innerHTML = '<p class="sb-muted">Uploading…</p>';
+			const out = $(imp.out); out.innerHTML = '<p class="sb-muted">Uploading…</p>';
 			const fd = new FormData(); fd.append("file", file); fd.append("is_private", 1);
 			const up = await fetch("/api/method/upload_file", { method: "POST", headers: { "X-Frappe-CSRF-Token": CSRF }, body: fd });
 			const uj = await up.json(); imp.file_url = uj.message.file_url; imp.file_name = file.name;
@@ -717,29 +776,36 @@
 				p.columns.map(col => '<div style="display:flex;gap:8px;align-items:center;margin:6px 0;"><label style="width:130px;font-size:13px;">' + col + (p.required.includes(col) ? ' *' : '') + '</label>' +
 					'<select data-col="' + col + '"><option value="">— none —</option>' + p.headers.map(h => '<option ' + (imp.mapping[col] === h ? "selected" : "") + '>' + esc(h) + '</option>').join("") + '</select></div>').join("") +
 				'<p class="sb-muted">' + p.total_rows + ' data rows.</p>' +
-				'<button class="sb-btn sb-btn--primary" id="imp-preview" style="margin-top:8px;">Preview</button><div id="imp-prev"></div>';
+				'<button class="sb-btn sb-btn--primary" id="imp-preview" style="margin-top:8px;">Preview</button><div id="' + imp.prev + '"></div>';
 			$("imp-preview").onclick = previewImport;
 		}
-		function readMapping() { const m = {}; document.querySelectorAll("#imp-out select[data-col]").forEach(s => { if (s.value) m[s.dataset.col] = s.value; }); return m; }
+		function readMapping() { const m = {}; document.querySelectorAll("#" + imp.out + " select[data-col]").forEach(s => { if (s.value) m[s.dataset.col] = s.value; }); return m; }
 		async function previewImport() {
 			imp.mapping = readMapping();
 			const r = await api("sbx_wmslite.console_api.import_preview", { file_url: imp.file_url, mapping: JSON.stringify(imp.mapping), dataset: imp.dataset });
-			$("imp-prev").innerHTML = '<div class="sb-card" style="padding:14px;margin-top:12px;background:var(--sb-bg);">' +
-				'<b>' + r.plans + '</b> ' + (r.group_unit || "plans") + ', <b>' + r.total_rows + '</b> rows, <b style="color:' + (r.errors ? '#a23b2e' : 'var(--sb-green)') + ';">' + r.errors + '</b> error(s).' +
+			// An upsert's headline number is how many rows are NEW, so when the server
+			// splits them out, show both — "1265 rows" alone hides whether this file
+			// adds three bays or rewrites the whole master.
+			const split = (r.new_count == null) ? "" :
+				' <span class="sb-muted">(' + r.new_count + ' new, ' + r.existing_count + ' already in the master)</span>';
+			$(imp.prev).innerHTML = '<div class="sb-card" style="padding:14px;margin-top:12px;background:var(--sb-bg);">' +
+				'<b>' + r.plans + '</b> ' + (r.group_unit || "plans") + ', <b>' + r.total_rows + '</b> rows, <b style="color:' + (r.errors ? '#a23b2e' : 'var(--sb-green)') + ';">' + r.errors + '</b> error(s).' + split +
 				(r.sample_errors.length ? '<ul>' + r.sample_errors.map(e => '<li class="sb-muted">' + esc(e) + '</li>').join("") + '</ul>' : '') +
 				'<button class="sb-btn sb-btn--orange" id="imp-commit" style="margin-top:10px;"' + (r.errors ? "" : "") + '>Commit import</button></div>';
 			$("imp-commit").onclick = commitImport;
 		}
 		async function commitImport() {
 			const r = await api("sbx_wmslite.console_api.import_commit", { file_url: imp.file_url, mapping: JSON.stringify(imp.mapping), label: imp.file_name, file_name: imp.file_name, dataset: imp.dataset });
-			imp.batch = r.batch; $("imp-prev").innerHTML = '<p class="sb-muted">Importing… (batch ' + esc(r.batch) + ')</p>';
+			imp.batch = r.batch; $(imp.prev).innerHTML = '<p class="sb-muted">Importing… (batch ' + esc(r.batch) + ')</p>';
 			poll();
 		}
 		async function poll() {
 			const s = await api("sbx_wmslite.console_api.get_import_status", { batch: imp.batch });
 			if (s.done) {
-				$("imp-prev").innerHTML = '<div class="sb-card" style="padding:14px;margin-top:12px;"><b>' + esc(s.status) + '</b> — ' + s.inserted + ' plan(s) imported, ' + s.errors + ' error(s).' +
+				const unit = IMPORT_UNIT[imp.dataset] || "row";
+				$(imp.prev).innerHTML = '<div class="sb-card" style="padding:14px;margin-top:12px;"><b>' + esc(s.status) + '</b> — ' + s.inserted + ' ' + unit + '(s) imported, ' + s.errors + ' error(s).' +
 					(s.error_report ? '<pre style="white-space:pre-wrap;font-size:12px;">' + esc(s.error_report) + '</pre>' : '') + '</div>';
+				if (imp.onDone) imp.onDone();
 			} else { setTimeout(poll, 1500); }
 		}
 

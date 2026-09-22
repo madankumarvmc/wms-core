@@ -14,6 +14,8 @@ missing label can be worked around without a deploy — a master that refuses a
 location the floor genuinely needs is worse than no master at all.
 """
 
+import os
+
 import frappe
 from frappe import _
 from frappe.utils import cint
@@ -23,6 +25,58 @@ from sbx_wmslite.decode import decode_bin_code
 # Refusals carry the terminal-failure sentinel so a queued offline event that can
 # never succeed is offered as dismissable rather than retried forever.
 from sbx_wmslite.tasks import throw_final
+
+# The plant's list of printed location labels, appended to whenever new bays are
+# built. Read by `seed_from_fixture` on install and by each refresh patch.
+FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+					   "fixtures", "bin_locations.txt")
+
+# A descriptive coil QR always contains " - "; a real location label never does.
+# The supplied exports routinely have coil strings pasted into the location
+# column, so every path that writes the master re-applies this rule rather than
+# trusting the file — see `console_api._run_binmaster_import` for the other one.
+COIL_MARKER = " - "
+
+
+def read_fixture():
+	"""The master list as printed labels, verbatim, with coil strings removed.
+
+	Returns `(codes, dropped)`. Codes are NOT normalised: the inconsistent ones
+	(`CC2/ G18/ 36`, `Jpr/mill 5`, `CCL3/a6/a`) are what is physically on the
+	label, and tidying them here would stop them scanning.
+	"""
+	if not os.path.exists(FIXTURE):
+		frappe.throw(f"WMSLite location fixture missing at {FIXTURE}")
+
+	codes, dropped = [], []
+	with open(FIXTURE, encoding="utf-8") as fh:
+		for line in fh:
+			code = line.strip()
+			if not code or code.startswith("#"):
+				continue
+			(dropped if COIL_MARKER in code else codes).append(code)
+	return codes, dropped
+
+
+def seed_from_fixture():
+	"""Insert every fixture label that isn't in the master yet. Returns the count.
+
+	Additive and idempotent by design — it never deletes or disables a code that
+	has dropped out of the fixture. `WMSLite Bin.name == bin_code`, and live
+	`Bin Inventory` / `Coil Transaction` rows point at those names, so removal is
+	a deliberate data migration and not something a re-seed should ever do.
+	"""
+	codes, dropped = read_fixture()
+	created = 0
+	for code in codes:
+		if frappe.db.exists("WMSLite Bin", code):
+			continue
+		doc = frappe.new_doc("WMSLite Bin")
+		doc.bin_code = code
+		doc.source = "Master"
+		doc.insert(ignore_permissions=True)
+		created += 1
+	return {"created": created, "in_fixture": len(codes), "dropped": len(dropped)}
 
 
 def validation_on():

@@ -11,6 +11,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, get_datetime, getdate, now_datetime, today
 
+from sbx_wmslite import locations
+
 SUPERVISOR = "Loading Supervisor"
 MANAGER = "WMS Manager"
 CONSOLE_ROLES = {SUPERVISOR, MANAGER, "System Manager"}
@@ -370,6 +372,29 @@ def get_bin_rollup(q=None, limit=50, start=0):
 	return {"rows": rows, "total": cint(total), "start": cint(start), "limit": cint(limit)}
 
 
+@frappe.whitelist()
+def get_bin_master(q=None, disabled=None, limit=50, start=0):
+	"""The location master itself — every label the floor is allowed to scan.
+
+	Distinct from `get_bin_rollup`, which reads Bin Inventory and so only knows
+	about bins that currently hold stock. A supervisor chasing "why won't this bay
+	scan?" needs to see the empty ones too, which is exactly the set this returns.
+	"""
+	_require_console()
+	filters = {}
+	if q:
+		filters["bin_code"] = ["like", f"{q}%"]   # prefix: index-backed
+	if disabled not in (None, ""):
+		filters["disabled"] = cint(disabled)
+	rows = frappe.get_all(
+		"WMSLite Bin", filters=filters,
+		fields=["name as bin_code", "zone", "aisle", "is_line", "disabled", "source"],
+		order_by="bin_code asc",
+		limit_page_length=cint(limit), limit_start=cint(start))
+	total = frappe.db.count("WMSLite Bin", filters=filters)
+	return {"rows": rows, "total": cint(total), "start": cint(start), "limit": cint(limit)}
+
+
 # --------------------------------------------------------------------------
 # scan transactions (Coil Transaction — the append-only scan feed)
 # --------------------------------------------------------------------------
@@ -495,6 +520,14 @@ _EXPORT_COLUMNS = {
 		("Bin", "bin_code"), ("Coils", "coils"), ("Weight", "weight"),
 		("Picked", "picked"), ("Last Updated", "last_updated"),
 	]),
+	# Column LABELS here are load-bearing: `parse_upload` suggests a mapping by
+	# comparing `header.lower().replace(" ", "_")` to the dataset's column names,
+	# so "Bin Code" -> bin_code and "Is Line" -> is_line. That is what lets a
+	# supervisor download this sheet, add rows and upload it straight back.
+	"bin_master": ("Bin Master", [
+		("Bin Code", "bin_code"), ("Zone", "zone"), ("Aisle", "aisle"),
+		("Is Line", "is_line"), ("Disabled", "disabled"), ("Source", "source"),
+	]),
 	"inventory_coil": ("Inventory by Coil", [
 		("Bin", "bin_code"), ("Coil", "coil_barcode"), ("Grade", "material_grade"),
 		("Weight", "weight"), ("Zone", "zone"), ("Aisle", "aisle"),
@@ -561,6 +594,8 @@ def _export_rows(view, args):
 		return get_trucks(status=status, q=q, date_from=df, date_to=dt, limit=limit)
 	if view == "inventory_bin":
 		return get_bin_rollup(q=q, limit=limit, start=0)["rows"]
+	if view == "bin_master":
+		return get_bin_master(q=q, disabled=args.get("disabled"), limit=limit, start=0)["rows"]
 	if view == "inventory_coil":
 		return get_bin_inventory(q=q, bin_code=args.get("bin_code"), status=status,
 								 limit=limit, start=0)["rows"]
@@ -645,13 +680,15 @@ _FILTER_LABELS = {"date_from": "from", "date_to": "to", "q": "search", "status":
 				  "source": "source", "direction": "direction", "result": "result",
 				  "truck": "truck", "bin_code": "bin", "plan": "plan",
 				  "unprocessed": "unprocessed only",
-				  "destination": "line", "flagged": "flagged only"}
+				  "destination": "line", "flagged": "flagged only",
+				  "disabled": "disabled"}
 
 # Only the keys a view actually queries on: echoing an ignored param (a date on
 # the inventory rollup, say) would read as a filter that never ran.
 _VIEW_FILTERS = {
 	"trucks": ["q", "status", "date_from", "date_to"],
 	"inventory_bin": ["q"],
+	"bin_master": ["q", "disabled"],
 	"inventory_coil": ["q", "bin_code", "status"],
 	"transactions": ["q", "source", "unprocessed", "date_from", "date_to"],
 	"confirmations": ["status", "date_from", "date_to"],
@@ -740,6 +777,15 @@ DATASETS = {
 						  ["COIL000002", "A-12-04", "GR50", "4800", "A", "12"]],
 		"template_headers": ["coil_barcode", "bin_code", "material_grade", "weight", "zone", "aisle"],
 	},
+	# The location master. Upsert-only: see `_run_binmaster_import`.
+	"Bin Master": {
+		"columns": ["bin_code", "zone", "aisle", "is_line", "disabled"],
+		"required": ["bin_code"],
+		"target": "WMSLite Bin",
+		"template_rows": [["CRM6/DE1", "CRM6", "DE", "0", "0"],
+						  ["PKL3/FG1", "PKL3", "FG", "0", "0"]],
+		"template_headers": ["bin_code", "zone", "aisle", "is_line", "disabled"],
+	},
 }
 
 
@@ -749,13 +795,36 @@ def _dataset(name):
 	return DATASETS[name]
 
 
-def _read_rows(file_url):
-	from frappe.utils.file_manager import get_file
+def _norm_header(v):
+	"""Header cell -> column name, the way parse_upload matches them."""
+	return str(v or "").strip().lower().replace(" ", "_")
+
+
+def _skip_preamble(rows, columns):
+	"""Drop title/filter lines above the real header row.
+
+	`_xlsx_response` writes three or four caption lines and a blank row before the
+	header, so a sheet exported from the console does not start with its own
+	header — download-edit-reupload would otherwise map every column to a title
+	string and import nothing. Scan forward to the first row that actually names a
+	column of this dataset.
+
+	No `columns`, or a row 0 that already matches, means the file is returned
+	untouched, so the Loading Plan and Bin Inventory paths behave exactly as before.
+	"""
+	if not columns or not rows:
+		return rows
+	wanted = set(columns)
+	for n, row in enumerate(rows):
+		if wanted & {_norm_header(c) for c in row}:
+			return rows[n:]
+	return rows
+
+
+def _read_rows(file_url, columns=None):
 	from frappe.utils.xlsxutils import read_xlsx_file_from_attached_file
 
-	fname, content = None, None
 	fdoc = frappe.get_doc("File", {"file_url": file_url})
-	path = fdoc.get_full_path()
 	if file_url.lower().endswith(".xlsx"):
 		rows = read_xlsx_file_from_attached_file(fcontent=fdoc.get_content())
 	else:
@@ -766,7 +835,7 @@ def _read_rows(file_url):
 		if isinstance(text, bytes):
 			text = text.decode("utf-8-sig")
 		rows = list(csv.reader(io.StringIO(text)))
-	return rows
+	return _skip_preamble(rows, columns)
 
 
 @frappe.whitelist()
@@ -791,14 +860,14 @@ def get_import_template(dataset="Loading Plan"):
 def parse_upload(file_url, dataset="Loading Plan"):
 	_require_console()
 	spec = _dataset(dataset)
-	rows = _read_rows(file_url)
+	rows = _read_rows(file_url, spec["columns"])
 	if not rows:
 		frappe.throw(_("File is empty"))
 	headers = [str(h).strip() for h in rows[0]]
 	suggested = {}
 	for col in spec["columns"]:
 		for h in headers:
-			if h.lower().replace(" ", "_") == col:
+			if _norm_header(h) == col:
 				suggested[col] = h
 				break
 	return {"headers": headers, "sample": rows[1:6], "columns": spec["columns"],
@@ -806,7 +875,11 @@ def parse_upload(file_url, dataset="Loading Plan"):
 
 
 def _mapped_rows(file_url, mapping):
-	rows = _read_rows(file_url)
+	# The mapping's keys are this dataset's column names, which is all
+	# `_skip_preamble` needs to find the header row in an exported sheet.
+	rows = _read_rows(file_url, list(mapping))
+	if not rows:
+		return []
 	headers = [str(h).strip() for h in rows[0]]
 	idx = {col: headers.index(src) for col, src in mapping.items() if src in headers}
 	out = []
@@ -823,6 +896,17 @@ def import_preview(file_url, mapping, dataset="Loading Plan"):
 	spec = _dataset(dataset)
 	mapping = json.loads(mapping) if isinstance(mapping, str) else mapping
 	rows = _mapped_rows(file_url, mapping)
+
+	if dataset == "Bin Master":
+		# The one number that decides whether this upload is safe to commit is how
+		# many codes are NEW, so say that outright rather than a row count. Reuses
+		# the classifier the commit itself runs, so the preview cannot disagree
+		# with the outcome.
+		new, existing, errors = _binmaster_split(rows)
+		return {"total_rows": len(rows), "plans": len(new), "group_unit": "new locations",
+				"new_count": len(new), "existing_count": len(existing),
+				"errors": len(errors), "sample_errors": errors[:20]}
+
 	errors = []
 	for n, row in enumerate(rows, start=2):
 		for req in spec["required"]:
@@ -862,7 +946,10 @@ def _run_import(batch, file_url, mapping, dataset="Loading Plan"):
 	frappe.db.commit()
 	rows = _mapped_rows(file_url, mapping)
 
-	if dataset == "Bin Inventory":
+	if dataset == "Bin Master":
+		inserted, errors, errlog = _run_binmaster_import(rows)
+		total = len(rows)
+	elif dataset == "Bin Inventory":
 		inserted, errors, errlog = _run_bin_import(rows)
 		total = len(rows)
 	else:
@@ -931,6 +1018,95 @@ def _run_bin_import(rows):
 	return inserted, errors, errlog
 
 
+# Flag columns are only applied when the sheet actually carries a value, so a
+# partial sheet (bin_code + zone, say) cannot silently clear everything else.
+_BINMASTER_FLAGS = ("is_line", "disabled")
+_BINMASTER_TEXT = ("zone", "aisle")
+
+
+def _binmaster_split(rows):
+	"""Classify rows into (new codes, existing codes, [rejection messages]).
+
+	Shared by the preview and the commit so the count a supervisor approves is
+	produced by the same code that then does the work.
+	"""
+	new, existing, rejects, seen = [], [], [], set()
+	for n, row in enumerate(rows, start=2):
+		code = (row.get("bin_code") or "").strip()
+		if not code:
+			rejects.append(f"Row {n}: missing bin_code")
+			continue
+		# A descriptive coil QR always contains " - ". Every supplied export so far
+		# has had a few pasted into the location column, and one that got through
+		# became a "location" holding two real coils — see locations.COIL_MARKER.
+		if locations.COIL_MARKER in code:
+			rejects.append(f"Row {n}: '{code[:45]}…' looks like a coil label, not a location")
+			continue
+		if code in seen:
+			rejects.append(f"Row {n}: '{code}' appears more than once in this file")
+			continue
+		seen.add(code)
+		(existing if frappe.db.exists("WMSLite Bin", code) else new).append((code, row))
+	return new, existing, rejects
+
+
+def _run_binmaster_import(rows):
+	"""Upsert the location master from an uploaded sheet.
+
+	Additive by contract: a code that is in the master but absent from the file is
+	left alone, not deleted and not disabled. `WMSLite Bin.name == bin_code` and
+	live Bin Inventory / Coil Transaction rows point at those names, so retiring a
+	location is a deliberate act — tick `disabled` on the row, which keeps the
+	history readable while taking it out of circulation.
+
+	Codes are written verbatim. The fixture's note applies here too: the messy
+	labels are what is physically printed, and normalising them on the way in
+	would stop them scanning.
+	"""
+	new, existing, errlog = _binmaster_split(rows)
+	errors = len(errlog)
+	created, updated = 0, 0
+
+	for code, row in new:
+		try:
+			doc = frappe.new_doc("WMSLite Bin")
+			doc.bin_code = code
+			for f in _BINMASTER_TEXT:
+				if (row.get(f) or "").strip():
+					doc.set(f, row[f].strip())
+			for f in _BINMASTER_FLAGS:
+				if (row.get(f) or "").strip():
+					doc.set(f, cint(row[f]))
+			doc.source = "Upload"
+			doc.insert(ignore_permissions=True)
+			created += 1
+		except Exception as e:
+			errors += 1
+			errlog.append(f"{code}: {e}")
+
+	for code, row in existing:
+		changes = {}
+		for f in _BINMASTER_TEXT:
+			if (row.get(f) or "").strip():
+				changes[f] = row[f].strip()
+		for f in _BINMASTER_FLAGS:
+			if (row.get(f) or "").strip():
+				changes[f] = cint(row[f])
+		if not changes:
+			continue
+		try:
+			frappe.db.set_value("WMSLite Bin", code, changes)
+			updated += 1
+		except Exception as e:
+			errors += 1
+			errlog.append(f"{code}: {e}")
+
+	errlog.insert(0, f"{created} new location(s) created, {updated} updated, "
+					 f"{len(existing) - updated} already up to date. "
+					 f"Nothing was removed.")
+	return created + updated, errors, errlog
+
+
 @frappe.whitelist()
 def get_import_status(batch):
 	_require_console()
@@ -944,6 +1120,14 @@ def get_import_status(batch):
 def delete_import_batch(batch):
 	"""Roll back an upload: delete the plans it created, then the batch."""
 	_require_console()
+	# Only the Loading Plan path creates rows that are this batch's to delete. A
+	# bin upload upserts onto a shared master that scans and stock already point
+	# at, so there is no safe undo — and reporting success while doing nothing
+	# would be worse than refusing.
+	if frappe.db.get_value("Import Batch", batch, "dataset") == "Bin Master":
+		frappe.throw(_("A Bin Master upload can't be rolled back — it updates the shared "
+					   "location master in place. To take a location out of use, tick "
+					   "Disabled on it instead."))
 	for name in frappe.get_all("Loading Plan", filters={"import_batch": batch}, pluck="name"):
 		frappe.delete_doc("Loading Plan", name, force=1, ignore_permissions=True)
 	frappe.db.set_value("Import Batch", batch, "status", "Rolled Back")

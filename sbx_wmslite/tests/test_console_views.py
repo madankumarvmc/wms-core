@@ -16,6 +16,10 @@ from sbx_wmslite import console_api
 
 BIN_A = "__TEST__BIN-A"
 BIN_B = "__TEST__BIN-B"
+# Location-master rows that hold no stock, so they can only come from WMSLite Bin.
+MASTER_PREFIX = "__TEST__MASTER"
+MASTER_ONLY = MASTER_PREFIX + "/EMPTY"
+MASTER_OFF = MASTER_PREFIX + "/RETIRED"
 COILS = ["__TEST__C1", "__TEST__C2", "__TEST__C3"]
 PLAIN_USER = "__test__console_plain@wms.local"
 
@@ -50,9 +54,23 @@ def _mktxn(coil, bin_code, source, txn_type, when):
 	return d.name
 
 
+def _mkmaster(code, disabled=0):
+	"""A location master row. Deliberately holds no stock — that is the point."""
+	if frappe.db.exists("WMSLite Bin", code):
+		frappe.delete_doc("WMSLite Bin", code, force=1, ignore_permissions=True)
+	d = frappe.new_doc("WMSLite Bin")
+	d.bin_code = code
+	d.zone = "__TEST__Z"
+	d.disabled = disabled
+	d.source = "Master"
+	d.insert(ignore_permissions=True)
+	return d.name
+
+
 def _cleanup():
 	frappe.set_user("Administrator")
-	for dt, field in (("Coil Transaction", "txn_key"), ("Bin Inventory", "coil_barcode")):
+	for dt, field in (("Coil Transaction", "txn_key"), ("Bin Inventory", "coil_barcode"),
+					  ("WMSLite Bin", "bin_code")):
 		for n in frappe.get_all(dt, filters={field: ["like", "%__TEST__%"]}, pluck="name"):
 			frappe.delete_doc(dt, n, force=1, ignore_permissions=True)
 	if frappe.db.exists("User", PLAIN_USER):
@@ -73,6 +91,8 @@ class TestConsoleInventoryViews(FrappeTestCase):
 		_mktxn(COILS[0], BIN_A, "Push API", None, "2026-08-01 10:00:00")
 		_mktxn(COILS[1], BIN_A, "Push API", None, "2026-08-02 10:00:00")
 		_mktxn(COILS[2], BIN_B, "In-app", "Inventory Count", "2026-08-03 10:00:00")
+		_mkmaster(MASTER_ONLY)
+		_mkmaster(MASTER_OFF, disabled=1)
 		frappe.db.commit()
 
 	@classmethod
@@ -223,6 +243,30 @@ class TestConsoleInventoryViews(FrappeTestCase):
 		self.assertEqual({r[0] for r in body if r and r[0]}, {BIN_A, BIN_B})
 		_p, _h, coils = self._sheet(console_api.export_view, view="inventory_coil", bin_code=BIN_A)
 		self.assertEqual({r[1] for r in coils if r and r[1]}, {COILS[0], COILS[1]})
+
+	# ---- bin master (WMSLite Bin, not Bin Inventory) ----
+	def test_bin_master_lists_locations_with_no_stock(self):
+		"""The point of this view: Inventory can only show bins that hold coils."""
+		d = console_api.get_bin_master(q=MASTER_ONLY)
+		self.assertEqual([r["bin_code"] for r in d["rows"]], [MASTER_ONLY])
+		self.assertEqual(d["total"], 1)
+		# ... and that bin holds nothing, so the rollup has never heard of it
+		self.assertEqual(console_api.get_bin_rollup(q=MASTER_ONLY)["rows"], [])
+
+	def test_bin_master_filters_by_disabled(self):
+		self.assertEqual(console_api.get_bin_master(q=MASTER_PREFIX, disabled=1)["total"], 1)
+		self.assertEqual(console_api.get_bin_master(q=MASTER_PREFIX, disabled=0)["total"], 1)
+		self.assertEqual(console_api.get_bin_master(q=MASTER_PREFIX)["total"], 2)
+
+	def test_bin_master_export_labels_map_back_to_column_names(self):
+		"""The download-edit-reupload loop depends on these exact labels."""
+		_p, header, body = self._sheet(console_api.export_view, view="bin_master", q=MASTER_PREFIX)
+		self.assertEqual(header, ["Bin Code", "Zone", "Aisle", "Is Line", "Disabled", "Source"])
+		self.assertEqual({r[0] for r in body if r and r[0]}, {MASTER_ONLY, MASTER_OFF})
+		spec = console_api.DATASETS["Bin Master"]
+		mapped = [console_api._norm_header(h) for h in header]
+		for col in spec["columns"]:
+			self.assertIn(col, mapped)
 
 	def test_export_dashboard_is_metric_value_pairs(self):
 		_p, header, body = self._sheet(console_api.export_dashboard)

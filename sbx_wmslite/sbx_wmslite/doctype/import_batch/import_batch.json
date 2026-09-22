@@ -35,7 +35,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Dataset",
-   "options": "Loading Plan\nBin Inventory"
+   "options": "Loading Plan\nBin Inventory\nBin Master"
   },
   {
    "fieldname": "target_doctype",

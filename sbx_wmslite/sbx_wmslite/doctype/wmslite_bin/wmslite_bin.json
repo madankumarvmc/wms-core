@@ -63,7 +63,7 @@
    "fieldname": "source",
    "fieldtype": "Select",
    "label": "Source",
-   "options": "Master\nObserved\nManual",
+   "options": "Master\nObserved\nManual\nUpload",
    "read_only": 1
   }
  ],
@@ -97,6 +97,18 @@
    "read": 1,
    "report": 1,
    "role": "Loading Supervisor",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "WMS Manager",
    "share": 1,
    "write": 1
   },
