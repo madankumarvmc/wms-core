@@ -14,22 +14,31 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from sbx_wmslite import api, sap_api
+from sbx_wmslite.tests.settings_guard import SettingsGuard
 
 TAG = "__TEST__WMS"
 TRUCK = "__TEST__TRUCK_UT"
 
 
+# Every field these tests write is listed here so tearDownClass can put the
+# site's own values back — this Single is shared with the live site.
+SETTINGS = SettingsGuard(
+	"sap_enabled",
+	"sap_api_key",
+	"qr_decode_rule",
+	"allow_overscan",
+	"allow_plan_remove_on_resync",
+	"supervisor_pin",
+	"undo_window_seconds",
+)
+
+
 def _settings():
-	s = frappe.get_doc("WMSLite Settings")
-	s.sap_enabled = 1
-	s.sap_api_key = "UT-KEY"
-	s.qr_decode_rule = "Identity"
-	s.allow_overscan = 1
-	s.allow_plan_remove_on_resync = 1
-	s.supervisor_pin = "9999"
-	s.undo_window_seconds = 600
-	s.save(ignore_permissions=True)
-	frappe.db.commit()
+	SETTINGS.apply(
+		sap_enabled=1, sap_api_key="UT-KEY", qr_decode_rule="Identity",
+		allow_overscan=1, allow_plan_remove_on_resync=1,
+		supervisor_pin="9999", undo_window_seconds=600,
+	)
 
 
 def _cleanup():
@@ -56,6 +65,7 @@ class TestWMSLite(FrappeTestCase):
 	@classmethod
 	def tearDownClass(cls):
 		_cleanup()
+		SETTINGS.restore()
 		super().tearDownClass()
 
 	def setUp(self):

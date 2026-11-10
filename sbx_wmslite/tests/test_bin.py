@@ -13,24 +13,34 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from sbx_wmslite import api, bin_api, sap_api
+from sbx_wmslite.tests.settings_guard import SettingsGuard
 from sbx_wmslite.decode import decode_bin_code
 
 TAG = "__TEST__BINUT"
 TRUCK = "__TEST__TRUCK_BINUT"
 
 
+# Every field these tests write is listed here so tearDownClass can put the
+# site's own values back — this Single is shared with the live site.
+SETTINGS = SettingsGuard(
+	"sap_enabled",
+	"sap_api_key",
+	"qr_decode_rule",
+	"bin_picking_enabled",
+	"bin_decode_rule",
+	"bin_decode_regex",
+	"allow_pick_outside_bin",
+	"mark_picked_on_load",
+	"undo_window_seconds",
+)
+
+
 def _settings():
-	s = frappe.get_doc("WMSLite Settings")
-	s.sap_enabled = 1
-	s.sap_api_key = "UT-KEY"
-	s.qr_decode_rule = "Identity"
-	s.bin_picking_enabled = 1
-	s.bin_decode_rule = "Identity"
-	s.allow_pick_outside_bin = 0
-	s.mark_picked_on_load = 1
-	s.undo_window_seconds = 600
-	s.save(ignore_permissions=True)
-	frappe.db.commit()
+	SETTINGS.apply(
+		sap_enabled=1, sap_api_key="UT-KEY", qr_decode_rule="Identity",
+		bin_picking_enabled=1, bin_decode_rule="Identity",
+		allow_pick_outside_bin=0, mark_picked_on_load=1, undo_window_seconds=600,
+	)
 
 
 def _cleanup():
@@ -57,6 +67,7 @@ class TestBinPicking(FrappeTestCase):
 	@classmethod
 	def tearDownClass(cls):
 		_cleanup()
+		SETTINGS.restore()
 		super().tearDownClass()
 
 	def setUp(self):

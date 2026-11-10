@@ -14,6 +14,7 @@ from frappe.tests.utils import FrappeTestCase
 from frappe.utils import get_datetime
 
 from sbx_wmslite import loading_push as lp
+from sbx_wmslite.tests.settings_guard import SettingsGuard, assert_no_live_pending_pushes
 
 TRUCK = "__TEST__LPUSH"
 
@@ -24,20 +25,33 @@ class FakeResp:
 		self.text = text
 
 
+# Every field these tests write is listed here so tearDownClass can put the
+# site's own values back — this Single is shared with the live site.
+SETTINGS = SettingsGuard(
+	"loading_push_enabled",
+	"loading_push_url",
+	"loading_push_user",
+	"loading_txn_type",
+	"loading_location_sep",
+	"loading_push_batch_size",
+	"verify_tls",
+	"auto_complete_on_full_load",
+)
+
+
 def _settings(enabled=1):
-	s = frappe.get_doc("WMSLite Settings")
-	s.loading_push_enabled = enabled
-	s.loading_push_url = "https://sap.example.invalid/sap/bc/zpwmsb/rest"
-	s.loading_push_user = "jindal1"
-	s.loading_txn_type = "T1"
-	s.loading_location_sep = "_"
-	s.loading_push_batch_size = 200
-	s.verify_tls = 0
-	# Deterministic baseline: auto-complete OFF (the shipped default). Tests that
-	# need it ON flip it explicitly.
-	s.auto_complete_on_full_load = 0
-	s.save(ignore_permissions=True)
-	frappe.db.commit()
+	SETTINGS.apply(
+		loading_push_enabled=enabled,
+		loading_push_url="https://sap.example.invalid/sap/bc/zpwmsb/rest",
+		loading_push_user="jindal1",
+		loading_txn_type="T1",
+		loading_location_sep="_",
+		loading_push_batch_size=200,
+		verify_tls=0,
+		# Deterministic baseline: auto-complete OFF (the shipped default). Tests that
+		# need it ON flip it explicitly.
+		auto_complete_on_full_load=0,
+	)
 
 
 def _cleanup():
@@ -58,11 +72,13 @@ class TestLoadingPush(FrappeTestCase):
 	@classmethod
 	def tearDownClass(cls):
 		_cleanup()
-		frappe.db.set_single_value("WMSLite Settings", "loading_push_enabled", 0)
-		frappe.db.commit()
+		SETTINGS.restore()
 		super().tearDownClass()
 
 	def setUp(self):
+		# sweep() is site-wide and SAP is mocked below: a real Pending coil would be
+		# marked Sent by the echo. Refuse rather than corrupt (see settings_guard).
+		assert_no_live_pending_pushes()
 		_cleanup()
 		_settings(1)
 		self.truck = TRUCK + "_" + self._testMethodName
@@ -197,6 +213,121 @@ class TestLoadingPush(FrappeTestCase):
 		by = self._statuses()
 		self.assertEqual(by["__TEST__F1"], "Sent")
 		self.assertEqual(by["__TEST__F2"], "Failed")
+
+	# ---- SAP's real answer shape: MSGTYPE decides, "already pushed" is a success ----
+	def test_sweep_msgtype_s_already_pushed_is_sent(self):
+		# Seen live 2026-09-23: a POST timed out client-side after SAP had recorded
+		# it; the retry came back MSGTYPE "S" / "Data already Pushed to SAP". That
+		# coil IS in SAP and must read Sent, not Failed. MSGTYPE "E" stays Failed
+		# whatever the text.
+		self._plan(["__TEST__A1", "__TEST__A2"])
+
+		def fake_post(session, url, data, headers, timeout, verify):
+			out = []
+			for r in json.loads(data):
+				if r["BATCH"] == "__TEST__A1":
+					msg, typ = "Data already Pushed to SAP", "S"
+				else:
+					msg, typ = "Data Pushed Successfully", "E"   # text lies, type wins
+				out.append({"BATCH": r["BATCH"], "ENTRYDATE": r["ENTRYDATE"],
+							"ENTRYTIME": r["ENTRYTIME"], "MSGTYPE": typ, "MESSAGE": msg})
+			return FakeResp(200, json.dumps(out))
+
+		with patch.object(lp, "_csrf_token", return_value="TKN"), \
+				patch.object(lp, "_http_post", side_effect=fake_post):
+			lp.sweep()
+		by = self._statuses()
+		self.assertEqual(by["__TEST__A1"], "Sent")
+		self.assertEqual(by["__TEST__A2"], "Failed")
+		self.assertEqual(frappe.db.get_value("WMSLite SAP Loading", {"coil_barcode": "__TEST__A1"},
+											 "sap_message"), "Data already Pushed to SAP")
+
+	# ---- SAP collapses the reply for a batch holding duplicates: resolve singly ----
+	def test_sweep_unechoed_rows_are_resent_one_at_a_time(self):
+		# Seen live 2026-09-23: 2 rows sent, 1 reply row. The unechoed coil was in
+		# SAP all along; a single-row re-send gets "already pushed" / S.
+		self._plan(["__TEST__U1", "__TEST__U2", "__TEST__U3"])
+		calls = []
+
+		def fake_post(session, url, data, headers, timeout, verify):
+			rows = json.loads(data)
+			calls.append([r["BATCH"] for r in rows])
+			if len(rows) > 1:
+				r = rows[-1]                      # SAP answers for the last row only
+				return FakeResp(200, json.dumps([{"BATCH": r["BATCH"], "ENTRYDATE": r["ENTRYDATE"],
+												  "ENTRYTIME": r["ENTRYTIME"], "MSGTYPE": "S",
+												  "MESSAGE": "Data Pushed Successfully"}]))
+			r = rows[0]
+			return FakeResp(200, json.dumps([{"BATCH": r["BATCH"], "ENTRYDATE": r["ENTRYDATE"],
+											  "ENTRYTIME": r["ENTRYTIME"], "MSGTYPE": "S",
+											  "MESSAGE": "Data already Pushed to SAP"}]))
+
+		with patch.object(lp, "_csrf_token", return_value="TKN"), \
+				patch.object(lp, "_http_post", side_effect=fake_post):
+			res = lp.sweep()
+		self.assertEqual(res["sent"], 3)
+		self.assertTrue(all(v == "Sent" for v in self._statuses().values()))
+		self.assertEqual(len(calls), 3)                 # 1 batch + 2 single re-sends
+		self.assertEqual(len(calls[0]), 3)
+		self.assertTrue(all(len(c) == 1 for c in calls[1:]))
+		# The record keeps both answers as evidence.
+		resp = frappe.db.get_value("WMSLite SAP Loading", {"coil_barcode": "__TEST__U1"}, "response_excerpt")
+		self.assertIn("already Pushed", resp)
+
+	def test_row_never_echoed_is_failed_with_explicit_message(self):
+		self._plan(["__TEST__N1", "__TEST__N2"])
+
+		def fake_post(session, url, data, headers, timeout, verify):
+			rows = json.loads(data)
+			# Only ever answer for N2 — even when N1 is re-sent alone, say nothing useful.
+			out = [{"BATCH": r["BATCH"], "ENTRYDATE": r["ENTRYDATE"], "ENTRYTIME": r["ENTRYTIME"],
+					"MSGTYPE": "S", "MESSAGE": "Data Pushed Successfully"}
+				   for r in rows if r["BATCH"] == "__TEST__N2"]
+			return FakeResp(200, json.dumps(out))
+
+		with patch.object(lp, "_csrf_token", return_value="TKN"), \
+				patch.object(lp, "_http_post", side_effect=fake_post):
+			lp.sweep()
+		by = self._statuses()
+		self.assertEqual(by["__TEST__N2"], "Sent")
+		self.assertEqual(by["__TEST__N1"], "Failed")
+		self.assertIn("No reply row from SAP",
+					  frappe.db.get_value("WMSLite SAP Loading", {"coil_barcode": "__TEST__N1"}, "sap_message"))
+
+	# ---- atomic claim: an in-flight coil is not re-sent by an overlapping sweep ----
+	def test_sweep_skips_coils_already_sending(self):
+		self._plan(["__TEST__C1"])
+		coil = frappe.db.get_value("Loading Plan Coil", {"coil_barcode": "__TEST__C1"}, "name")
+		frappe.db.set_value("Loading Plan Coil", coil,
+							{"sap_loading_status": "Sending", "sap_loading_pushed_at": frappe.utils.now_datetime()},
+							update_modified=False)
+		frappe.db.commit()
+		with patch.object(lp, "_csrf_token", return_value="TKN"), \
+				patch.object(lp, "_http_post") as post:
+			res = lp.sweep()
+		post.assert_not_called()
+		self.assertEqual(res, {"pending": 0})
+		self.assertEqual(self._statuses()["__TEST__C1"], "Sending")
+
+	def test_stuck_sending_is_recovered_and_sent(self):
+		self._plan(["__TEST__C2"])
+		coil = frappe.db.get_value("Loading Plan Coil", {"coil_barcode": "__TEST__C2"}, "name")
+		frappe.db.set_value("Loading Plan Coil", coil,
+							{"sap_loading_status": "Sending",
+							 "sap_loading_pushed_at": frappe.utils.add_to_date(frappe.utils.now_datetime(), minutes=-30)},
+							update_modified=False)
+		frappe.db.commit()
+
+		def fake_post(session, url, data, headers, timeout, verify):
+			rows = json.loads(data)
+			return FakeResp(200, json.dumps([{"BATCH": r["BATCH"], "ENTRYDATE": r["ENTRYDATE"],
+											  "ENTRYTIME": r["ENTRYTIME"], "MESSAGE": "Data Pushed Successfully"}
+											 for r in rows]))
+		with patch.object(lp, "_csrf_token", return_value="TKN"), \
+				patch.object(lp, "_http_post", side_effect=fake_post):
+			res = lp.sweep()
+		self.assertEqual(res["sent"], 1)
+		self.assertEqual(self._statuses()["__TEST__C2"], "Sent")
 
 	# ---- transport / CSRF failure leaves Pending for retry ----
 	def test_sweep_transport_failure_keeps_pending(self):

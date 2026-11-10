@@ -36,6 +36,15 @@
 		.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
 		.toolbar input, .toolbar select { padding: 8px 10px; border: 1px solid var(--sb-line); border-radius: var(--sb-radius-sm); }
 		.sb-btn--inline { width: auto; flex: 0 0 auto; }
+		/* segmented toggle (By Bin / By Coil, transaction source) */
+		.seg { display: inline-flex; border: 1px solid var(--sb-line); border-radius: var(--sb-radius-sm); overflow: hidden; }
+		.seg button { border: 0; background: var(--sb-card); padding: 8px 14px; font-size: 13px; cursor: pointer;
+			border-right: 1px solid var(--sb-line); font-family: inherit; }
+		.seg button:last-child { border-right: 0; }
+		.seg button.on { background: var(--sb-orange); color: #fff; font-weight: 600; }
+		/* pager under the big tables */
+		.pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+		.pager button[disabled] { opacity: .4; cursor: not-allowed; }
 	</style>
 </head>
 <body class="sb-body">
@@ -47,10 +56,22 @@
 			<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;opacity:.6;margin-bottom:8px;">WMS Core</div>
 			<nav id="nav"></nav>
 			<a href="/wms-help" target="_blank" rel="noopener" style="display:block;margin-top:14px;padding:9px 12px;border-radius:8px;color:#fff;text-decoration:none;opacity:.7;font-size:13px;">? Help / Manual</a>
-			<div style="position:absolute;bottom:16px;font-size:12px;opacity:.6;">{{ full_name }}</div>
+			<div class="foot">
+				<div style="font-size:12px;opacity:.6;padding:0 12px 6px;">{{ full_name }}</div>
+				<button class="logout" id="logout" type="button">Sign out</button>
+			</div>
 		</aside>
 		<main style="padding:24px 28px;width:100%;min-width:0;">
-			<h1 class="sb-display" id="view-title" style="margin:0 0 18px;">Dashboard</h1>
+			<div style="display:flex;align-items:center;gap:14px;margin:0 0 18px;flex-wrap:wrap;">
+				<h1 class="sb-display" id="view-title" style="margin:0;">Dashboard</h1>
+				<span style="flex:1;"></span>
+				<!-- Global filters: apply to every view and export, remembered per browser. -->
+				<div class="toolbar" id="gbar" style="margin:0;">
+					<label style="font-size:12px;color:var(--sb-muted);">Site <select id="g-site" title="Derived from the bin code prefix (WMSLite Site master); trucks via the SAP plant code"><option value="">All sites</option></select></label>
+					<label style="font-size:12px;color:var(--sb-muted);">Material <select id="g-mat" title="Derived from the product name (pipe keywords in WMSLite Settings)"><option value="">All materials</option></select></label>
+					<span id="g-na" class="sb-muted" style="font-size:12px;"></span>
+				</div>
+			</div>
 			<div id="content"></div>
 		</main>
 	</div>
@@ -62,15 +83,35 @@
 		const CSRF = "{{ csrf_token }}";
 		window.WMS_CSRF = CSRF; // exposed for E2E seeding helpers
 		const $ = (id) => document.getElementById(id);
-		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["confirmations", "SAP Confirmations"], ["saploading", "SAP Loading"], ["saplog", "SAP Log"], ["import", "Import"]];
+		const CAN_USERS = {{ can_manage_users or 0 }};   // WMS Manager / System Manager
+		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["binmaster", "Bin Master"], ["transactions", "Scan Transactions"], ["confirmations", "SAP Confirmations"], ["rm", "RM Movement"], ["saploading", "SAP Loading"], ["saplog", "SAP Log"], ["import", "Import"]]
+			.concat(CAN_USERS ? [["users", "Users"]] : []);
 		const GI_PILL = { "Confirmed": "done", "Pending": "open", "Held": "appr", "Sending": "prog", "Failed (Retryable)": "prog", "Failed (Business)": "canc", "Exhausted": "canc", "Not Required": "canc" };
-		const T1_PILL = { "Sent": "done", "Pending": "open", "Failed": "canc", "Not Required": "canc" };
+		const T1_PILL = { "Sent": "done", "Pending": "open", "Sending": "prog", "Failed": "canc", "Disabled": "prog", "Not Required": "canc" };
 		let state = { view: "dashboard" };
 
+		// ---- global filters (Site / Material Type; Transaction Type on the dashboard) ----
+		// Chosen once in the header, applied to every view and export, remembered per
+		// browser. api() and apiUrl() merge them into every request, so no view has to
+		// thread them by hand; an endpoint that does not declare the kwarg drops it
+		// (Frappe strips unknown kwargs), which is what "n/a on this view" means.
+		const GKEY = "wms_console_global_v1";
+		let GLOBAL = { site: "", material_type: "", txn_type: "" };
+		try { Object.assign(GLOBAL, JSON.parse(localStorage.getItem(GKEY) || "{}")); } catch (e) { /* storage blocked: defaults */ }
+		function saveGlobal() { try { localStorage.setItem(GKEY, JSON.stringify(GLOBAL)); } catch (e) { /* ignore */ } }
+		function globalArgs() {
+			const a = {};
+			if (GLOBAL.site) a.site = GLOBAL.site;
+			if (GLOBAL.material_type) a.material_type = GLOBAL.material_type;
+			return a;
+		}
+		let FILTER_OPTS = { sites: [], material_types: [], txn_types: [["", "All"]], support: {} };
+
 		async function api(method, args) {
+			const payload = Object.assign({}, globalArgs(), args || {});   // explicit args win
 			const res = await fetch("/api/method/" + method, {
 				method: "POST", headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": CSRF },
-				body: JSON.stringify(args || {}),
+				body: JSON.stringify(payload),
 			});
 			if (!res.ok) {
 				let m = "Error " + res.status;
@@ -94,13 +135,88 @@
 		}
 		const rangeArgs = (p) => ({ date_from: $(p + "-from").value || null, date_to: $(p + "-to").value || null });
 
+		// ---- Excel export ----
+		// The server re-runs the same query the screen ran (minus the on-screen page
+		// limit), so the file always matches the filters that are showing.
+		function apiUrl(method, args) {
+			const p = new URLSearchParams();
+			const merged = Object.assign({}, globalArgs(), args || {});   // exports follow the global filters too
+			Object.keys(merged).forEach((k) => {
+				const v = merged[k];
+				if (v !== null && v !== undefined && v !== "") p.append(k, v);
+			});
+			const qs = p.toString();
+			return "/api/method/" + method + (qs ? "?" + qs : "");
+		}
+		const exportUrl = (view, args) => apiUrl("sbx_wmslite.console_api.export_view", Object.assign({ view: view }, args || {}));
+		const exportBtn = (id) => '<button class="sb-btn sb-btn--ghost sb-btn--inline" id="' + id +
+			'" title="Download these rows as an Excel file" style="padding:6px 10px;font-size:12px;">\u2b07 Excel</button>';
+
+		// Fetched as a blob rather than navigated to: a server-side error on a plain
+		// link would replace the whole console with Frappe's error page.
+		async function downloadExport(btn, url) {
+			const label = btn.textContent;
+			btn.disabled = true; btn.textContent = "Preparing\u2026";
+			try {
+				const res = await fetch(url, { headers: { "X-Frappe-CSRF-Token": CSRF } });
+				const ctype = res.headers.get("Content-Type") || "";
+				if (!res.ok || ctype.indexOf("json") >= 0) {
+					let m = "Export failed (" + res.status + ")";
+					try { const j = await res.json(); m = (j._server_messages ? JSON.parse(j._server_messages).map(x => JSON.parse(x).message).join("\n") : (j.message || j.exception)) || m; } catch (e) { }
+					throw new Error(m);
+				}
+				const blob = await res.blob();
+				const cd = res.headers.get("Content-Disposition") || "";
+				const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+				const a = document.createElement("a");
+				a.href = URL.createObjectURL(blob);
+				a.download = m ? decodeURIComponent(m[1]) : "wmslite_export.xlsx";
+				document.body.appendChild(a); a.click(); a.remove();
+				setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+			} catch (e) { alert(e.message || "Export failed"); }
+			finally { btn.disabled = false; btn.textContent = label; }
+		}
+		// The URL is built at click time, not render time, so the file follows the
+		// filters as they stand when the button is pressed.
+		function onExport(id, urlFn) {
+			const b = $(id);
+			if (b) b.onclick = () => downloadExport(b, urlFn());
+		}
+
+		// Grey out a global select the current view cannot honour, and say so.
+		function syncGlobalBar() {
+			const sup = FILTER_OPTS.support[state.view] || [];
+			const siteOk = sup.indexOf("site") >= 0, matOk = sup.indexOf("material_type") >= 0;
+			$("g-site").disabled = !siteOk; $("g-mat").disabled = !matOk;
+			$("g-na").textContent = (!siteOk && !matOk) ? "Site and material: n/a on this view"
+				: (!matOk ? "Material: n/a on this view" : (!siteOk ? "Site: n/a on this view" : ""));
+		}
+		async function loadFilterOptions() {
+			try { FILTER_OPTS = await api("sbx_wmslite.console_api.get_filter_options"); } catch (e) { /* bar stays empty */ }
+			const fill = (id, vals, cur) => {
+				const sel = $(id);
+				const first = sel.options[0].outerHTML;
+				sel.innerHTML = first + vals.map(v => '<option value="' + esc(v) + '">' + esc(v) + '</option>').join("");
+				sel.value = vals.indexOf(cur) >= 0 ? cur : "";
+			};
+			fill("g-site", FILTER_OPTS.sites || [], GLOBAL.site);
+			fill("g-mat", FILTER_OPTS.material_types || [], GLOBAL.material_type);
+			GLOBAL.site = $("g-site").value; GLOBAL.material_type = $("g-mat").value;   // a remembered value the master no longer has
+			const onchange = () => {
+				GLOBAL.site = $("g-site").value; GLOBAL.material_type = $("g-mat").value; saveGlobal();
+				INV.start = 0; BM.start = 0; TXN.start = 0;   // an offset past the new filtered total would show an empty page
+				render();
+			};
+			$("g-site").onchange = onchange; $("g-mat").onchange = onchange;
+		}
+
 		function renderNav() {
 			$("nav").innerHTML = VIEWS.map(([k, label]) =>
 				'<a class="nav-item" data-v="' + k + '" style="display:block;padding:9px 12px;border-radius:8px;color:#fff;text-decoration:none;margin-bottom:3px;' +
 				(state.view === k ? "background:var(--sb-orange);font-weight:700;" : "opacity:.85;") + '">' + label + '</a>').join("");
 			document.querySelectorAll(".nav-item").forEach((a) => a.onclick = () => navigate(a.dataset.v));
 		}
-		function navigate(v) { state.view = v; renderNav(); $("view-title").textContent = VIEWS.find(x => x[0] === v)[1]; render(); }
+		function navigate(v) { state.view = v; renderNav(); $("view-title").textContent = VIEWS.find(x => x[0] === v)[1]; syncGlobalBar(); render(); }
 
 		async function render() {
 			const c = $("content"); c.innerHTML = '<p class="sb-muted">Loading…</p>';
@@ -108,43 +224,119 @@
 				if (state.view === "dashboard") return renderDashboard(c);
 				if (state.view === "trucks") return renderTrucks(c);
 				if (state.view === "inventory") return renderInventory(c);
+				if (state.view === "binmaster") return renderBinMaster(c);
 				if (state.view === "confirmations") return renderConfirmations(c);
 				if (state.view === "saploading") return renderSapLoading(c);
 				if (state.view === "saplog") return renderSapLog(c);
 				if (state.view === "import") return renderImport(c);
+				if (state.view === "transactions") return renderTransactions(c);
+				if (state.view === "rm") return renderRm(c);
+				if (state.view === "users") return renderUsers(c);
 			} catch (e) { c.innerHTML = '<p style="color:#a23b2e;">' + esc(e.message) + '</p>'; }
 		}
 
 		// ---------- dashboard ----------
+		// Sections are grouped by the "Transaction Type" selector (Loading (Outbound) /
+		// Inventory scanning / RM Movement); the server computes only the group that
+		// is asked for, and only the sections present in the reply are shown.
 		async function renderDashboard(c) {
 			const r = state.dashRange || defaultRange();
+			const rangeSpan = (id) => '<span id="' + id + '" class="sb-muted" style="font-weight:400;text-transform:none;letter-spacing:0;"></span>';
+			const seg = '<div class="seg" id="db-seg" title="Transaction type">' + FILTER_OPTS.txn_types.map(([k, l]) =>
+				'<button data-tt="' + esc(k) + '" class="' + (GLOBAL.txn_type === k ? "on" : "") + '">' + esc(l) + '</button>').join("") + '</div>';
 			c.innerHTML =
-				'<div class="toolbar">' + dateControls("db", r) + '</div>' +
-				'<div class="sb-label" style="margin:2px 0 6px;">Now</div>' +
+				'<div class="toolbar">' + seg + dateControls("db", r) + '<span style="flex:1;"></span>' + exportBtn("db-x") + '</div>' +
+				'<div id="db-loading">' +
+				'<div class="sb-label" style="margin:2px 0 6px;">Loading (Outbound) — now</div>' +
 				'<div class="kpis" id="db-live"></div>' +
-				'<div class="sb-label" style="margin:16px 0 6px;">Throughput <span id="db-range" class="sb-muted" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>' +
-				'<div class="kpis" id="db-thru"></div>' +
+				'<div class="sb-label" style="margin:16px 0 6px;">Loading throughput ' + rangeSpan("db-range") + '</div>' +
+				'<div class="kpis" id="db-thru"></div></div>' +
+				'<div id="db-inventory">' +
+				'<div class="sb-label" style="margin:16px 0 6px;">Inventory on hand</div>' +
+				'<div class="kpis" id="db-inv"></div>' +
+				'<div class="sb-label" style="margin:16px 0 6px;">Inventory scanning ' + rangeSpan("db-range2") + '</div>' +
+				'<div class="kpis" id="db-scans"></div>' +
+				'<div id="db-scanfoot" class="sb-muted" style="font-size:12px;margin-top:6px;"></div></div>' +
+				'<div id="db-rmsec">' +
+				'<div class="sb-label" style="margin:16px 0 6px;">RM Movement ' + rangeSpan("db-range3") + '</div>' +
+				'<div class="kpis" id="db-rm"></div></div>' +
 				'<div class="sb-card" id="db-overall" style="padding:18px;margin-top:18px;"></div>';
 			const load = async () => {
 				const ra = rangeArgs("db");
 				state.dashRange = { from: ra.date_from || "", to: ra.date_to || "" };
-				const d = await api("sbx_wmslite.console_api.get_dashboard", ra);
-				$("db-live").innerHTML =
-					kpi(d.live.open, "Open / Active", true) + kpi(d.live.pending_approval, "Awaiting Approval") +
-					kpi(d.live.gi_awaiting_release, "GI Awaiting Release") + kpi(d.live.gi_failed, "GI Failed");
-				$("db-range").textContent = (ra.date_from && ra.date_to) ? ("· " + ra.date_from + " → " + ra.date_to) : "· all time";
-				$("db-thru").innerHTML =
-					kpi(d.throughput.completed, "Completed") + kpi(d.throughput.coils_loaded, "Coils Loaded") + kpi(d.throughput.rejects, "Rejects");
-				$("db-overall").innerHTML =
-					'<div class="sb-label">Overall coil progress' + ((ra.date_from && ra.date_to) ? " (plans received in range)" : "") + '</div>' +
-					'<div class="bar"><i style="width:' + d.coils.progress_pct + '%"></i></div>' +
-					'<p class="sb-muted" style="margin-top:8px;">' + d.coils.loaded + ' loaded · ' + d.coils.skipped + ' skipped · ' + d.coils.pending + ' pending</p>';
+				const d = await api("sbx_wmslite.console_api.get_dashboard", Object.assign({ txn_type: GLOBAL.txn_type }, ra));
+				const rangeLabel = (ra.date_from && ra.date_to) ? ("· " + ra.date_from + " → " + ra.date_to) : "· all time";
+				const show = (id, on) => { $(id).style.display = on ? "" : "none"; };
+				show("db-loading", !!d.live); show("db-overall", !!d.coils);
+				show("db-inventory", !!d.inventory); show("db-rmsec", !!d.rm);
+				if (d.live) {
+					$("db-live").innerHTML =
+						kpi(d.live.open, "Open / Active", true) + kpi(d.live.pending_approval, "Awaiting Approval") +
+						kpi(d.live.gi_awaiting_release, "GI Awaiting Release") + kpi(d.live.gi_failed, "GI Failed");
+					$("db-range").textContent = rangeLabel;
+					$("db-thru").innerHTML =
+						kpi(d.throughput.completed, "Completed") + kpi(d.throughput.coils_loaded, "Coils Loaded") + kpi(d.throughput.rejects, "Rejects");
+					$("db-overall").innerHTML =
+						'<div class="sb-label">Overall coil progress' + ((ra.date_from && ra.date_to) ? " (plans received in range)" : "") + '</div>' +
+						'<div class="bar"><i style="width:' + d.coils.progress_pct + '%"></i></div>' +
+						'<p class="sb-muted" style="margin-top:8px;">' + d.coils.loaded + ' loaded · ' + d.coils.skipped + ' skipped · ' + d.coils.pending + ' pending</p>';
+				}
+				if (d.inventory) {
+					// inventory is deliberately NOT range-scoped — stock on hand is "now"
+					$("db-inv").innerHTML =
+						kpi(fmt(d.inventory.coils), "Coils in Stock", true) + kpi(fmt(d.inventory.bins), "Bins Occupied") +
+						kpi(fmt(Math.round(d.inventory.weight)), "Total Weight") + kpi(fmt(d.inventory.picked), "Picked");
+					$("db-range2").textContent = rangeLabel;
+					$("db-scans").innerHTML =
+						kpi(fmt(d.scans.total), "Scans") + kpi(fmt(d.scans.sap_feed), "From SAP Feed") +
+						kpi(fmt(d.scans.in_app), "Inventory Count") + kpi(fmt(d.scans.coils), "Coils Touched");
+					$("db-scanfoot").innerHTML =
+						(d.scans.last_scan ? "Last scan " + esc(d.scans.last_scan.slice(0, 19)) : "No scans in range") +
+						(d.scans.unprocessed ? ' · <b style="color:#a23b2e;">' + d.scans.unprocessed + ' unprocessed</b> — open Transactions to derive them' : " · all scans derived");
+				}
+				if (d.rm) {
+					$("db-range3").textContent = rangeLabel;
+					$("db-rm").innerHTML =
+						kpi(fmt(d.rm.in_transit), "In Transit (now)", true) + kpi(fmt(d.rm.lines_active), "Lines Active (now)") +
+						kpi(fmt(d.rm.stale_lines), "Ageing ≥ " + d.rm.stale_hours + "h (now)") + kpi(fmt(d.rm.flagged), "Flagged Receipts (now)") +
+						kpi(fmt(d.rm.dispatched), "Dispatched") + kpi(fmt(d.rm.received), "Received");
+				}
 			};
+			$("db-seg").querySelectorAll("button").forEach(b => {
+				b.onclick = () => { GLOBAL.txn_type = b.dataset.tt; saveGlobal(); renderDashboard(c); };
+			});
 			$("db-from").onchange = load; $("db-to").onchange = load;
+			onExport("db-x", () => apiUrl("sbx_wmslite.console_api.export_dashboard", Object.assign({ txn_type: GLOBAL.txn_type }, rangeArgs("db"))));
 			$("db-clear").onclick = () => { $("db-from").value = ""; $("db-to").value = ""; load(); };
 			load();
 		}
 		const kpi = (n, l, accent) => '<div class="kpi' + (accent ? " accent" : "") + '"><div class="n">' + esc(n) + '</div><div class="l">' + esc(l) + '</div></div>';
+		// 53130 -> "53,130". These views deal in tens of thousands; raw digits are unreadable.
+		const fmt = (n) => (n === null || n === undefined || n === "") ? "0" : Number(n).toLocaleString("en-IN");
+
+		// Placeholder while a query is in flight, so stale rows are never mistaken
+		// for the new filter's result.
+		function busy(tableId, pagerId) {
+			const t = $(tableId); if (t) t.innerHTML = '<p class="sb-muted" style="padding:14px 0;">Loading…</p>';
+			const p = pagerId && $(pagerId); if (p) p.innerHTML = "";
+		}
+
+		// ---------- shared pager ----------
+		// Server-side paging for the big tables (53k coils / 260k transactions).
+		// Renders "showing X-Y of Z" + Prev/Next; onGo(newStart) reloads that page.
+		function pager(id, d, onGo) {
+			const start = d.start || 0, limit = d.limit || 50, total = d.total || 0;
+			const from = total ? start + 1 : 0, to = Math.min(start + limit, total);
+			const el = $(id);
+			if (!el) return;
+			el.innerHTML =
+				'<span class="sb-muted" style="font-size:13px;">Showing ' + fmt(from) + '–' + fmt(to) + ' of ' + fmt(total) + '</span>' +
+				'<span style="flex:1;"></span>' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" id="' + id + '-prev"' + (start <= 0 ? " disabled" : "") + '>‹ Prev</button>' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" id="' + id + '-next"' + (to >= total ? " disabled" : "") + '>Next ›</button>';
+			$(id + "-prev").onclick = () => onGo(Math.max(0, start - limit));
+			$(id + "-next").onclick = () => onGo(start + limit);
+		}
 
 		// ---------- trucks ----------
 		async function renderTrucks(c) {
@@ -153,7 +345,8 @@
 				'<div class="toolbar"><input id="t-q" placeholder="Search truck…" />' +
 				'<select id="t-status"><option value="">All statuses</option>' +
 				['Open', 'In Progress', 'Pending Approval', 'Completed', 'Completed (Short)', 'Cancelled'].map(s => '<option>' + s + '</option>').join("") +
-				'</select>' + dateControls("t", r) + '</div><div id="t-table"></div>';
+				'</select>' + dateControls("t", r) + '<span style="flex:1;"></span>' + exportBtn("t-x") +
+				'</div><div id="t-table"></div>';
 			const load = async () => {
 				const rows = await api("sbx_wmslite.console_api.get_trucks", { q: $("t-q").value, status: $("t-status").value, ...rangeArgs("t") });
 				$("t-table").innerHTML = '<table class="grid"><thead><tr><th>Truck</th><th>Status</th><th>GI</th><th>Source</th><th>Loaded</th><th>Pending</th><th>Total</th><th>Claimed</th></tr></thead><tbody>' +
@@ -164,6 +357,7 @@
 					).join("") : '<tr><td colspan="8" class="sb-muted">No trucks</td></tr>') + '</tbody></table>';
 				document.querySelectorAll("#t-table tr.click").forEach(tr => tr.onclick = () => truckDrawer(tr.dataset.p));
 			};
+			onExport("t-x", () => exportUrl("trucks", { q: $("t-q").value, status: $("t-status").value, ...rangeArgs("t") }));
 			$("t-q").oninput = () => { clearTimeout(window._td); window._td = setTimeout(load, 300); };
 			$("t-status").onchange = load;
 			$("t-from").onchange = load; $("t-to").onchange = load;
@@ -180,6 +374,7 @@
 				'<div class="row" style="display:flex;gap:8px;margin:12px 0;">' +
 				(p.plan_status === "Ready to Complete" ? '<button class="sb-btn sb-btn--primary sb-btn--inline" id="d-complete">Complete loading</button>' : '') +
 				(p.plan_status !== "Cancelled" ? '<button class="sb-btn sb-btn--ghost sb-btn--inline" id="d-cancel">Cancel plan</button>' : '<button class="sb-btn sb-btn--ghost sb-btn--inline" id="d-reopen">Reopen</button>') +
+				exportBtn("d-x") +
 				'</div>' +
 				'<div class="sb-label" style="margin-top:8px;">Coils (' + p.loaded_coils + '/' + p.total_coils + ' loaded)</div>' +
 				'<table class="grid"><thead><tr><th>Coil</th><th>Status</th><th>Grade</th><th>By</th><th>SAP T1</th></tr></thead><tbody>' +
@@ -198,6 +393,7 @@
 					'</td><td>' + esc(e.coil_barcode || "") + '</td><td>' + esc(e.operator || e.approver || "") + '</td><td class="sb-muted">' + esc(e.reason || "") + '</td></tr>').join("") +
 				'</tbody></table>'
 			);
+			onExport("d-x", () => exportUrl("truck_detail", { plan: plan }));
 			const okb = $("d-complete"); if (okb) okb.onclick = async () => { if (confirm("Complete loading for this truck? This fires the SAP goods-issue and T1 pushes.")) { try { await api("sbx_wmslite.console_api.complete_plan", { plan }); closeDrawer(); render(); } catch (e) { alert(e.message); } } };
 			const cb = $("d-cancel"); if (cb) cb.onclick = async () => { if (confirm("Cancel this plan?")) { await api("sbx_wmslite.console_api.cancel_plan", { plan }); closeDrawer(); render(); } };
 			const rb = $("d-reopen"); if (rb) rb.onclick = async () => { await api("sbx_wmslite.console_api.cancel_plan", { plan, reopen: 1 }); closeDrawer(); render(); };
@@ -208,7 +404,8 @@
 		// ---------- SAP confirmations (outbound GI) ----------
 		async function renderConfirmations(c) {
 			const r = defaultRange();
-			c.innerHTML = '<div class="toolbar">' + dateControls("cf", r) + '</div><div id="cf-table"></div>';
+			c.innerHTML = '<div class="toolbar">' + dateControls("cf", r) + '<span style="flex:1;"></span>' + exportBtn("cf-x") +
+				'</div><div id="cf-table"></div>';
 			const load = async () => {
 				const rows = await api("sbx_wmslite.console_api.get_confirmations", rangeArgs("cf"));
 				$("cf-table").innerHTML = '<table class="grid"><thead><tr><th>Truck</th><th>Type</th><th>Status</th><th>Attempts</th><th>GI Doc</th><th>Last error</th><th>Actions</th></tr></thead><tbody>' +
@@ -228,6 +425,7 @@
 					try { await api("sbx_wmslite.console_api.retry_confirmation", { name: b.dataset.retry }); load(); } catch (e) { alert(e.message); } });
 				document.querySelectorAll("#cf-table tr.click").forEach(tr => tr.onclick = () => confDrawer(tr.dataset.cf));
 			};
+			onExport("cf-x", () => exportUrl("confirmations", rangeArgs("cf")));
 			$("cf-from").onchange = load; $("cf-to").onchange = load;
 			$("cf-clear").onclick = () => { $("cf-from").value = ""; $("cf-to").value = ""; load(); };
 			load();
@@ -259,7 +457,7 @@
 			const r = defaultRange();
 			c.innerHTML = '<div class="toolbar"><input id="tl-q" placeholder="Search truck…" />' +
 				'<select id="tl-status"><option value="">All statuses</option><option>Pending</option><option>Sent</option><option>Failed</option></select>' +
-				dateControls("tl", r) + '</div><div id="tl-table"></div>';
+				dateControls("tl", r) + '<span style="flex:1;"></span>' + exportBtn("tl-x") + '</div><div id="tl-table"></div>';
 			const load = async () => {
 				const rows = await api("sbx_wmslite.console_api.get_coil_loading", { status: $("tl-status").value, truck: $("tl-q").value, ...rangeArgs("tl") });
 				$("tl-table").innerHTML = '<table class="grid"><thead><tr><th>Coil</th><th>Truck</th><th>Status</th><th>Pushed at</th><th>Message</th><th>Actions</th></tr></thead><tbody>' +
@@ -272,10 +470,108 @@
 				document.querySelectorAll("#tl-table [data-retry]").forEach(b => b.onclick = async () => {
 					try { await api("sbx_wmslite.console_api.retry_coil_loading", { coil: b.dataset.retry }); load(); } catch (e) { alert(e.message); } });
 			};
+			onExport("tl-x", () => exportUrl("saploading", { status: $("tl-status").value, truck: $("tl-q").value, ...rangeArgs("tl") }));
 			$("tl-q").oninput = () => { clearTimeout(window._tld); window._tld = setTimeout(load, 300); };
 			$("tl-status").onchange = load; $("tl-from").onchange = load; $("tl-to").onchange = load;
 			$("tl-clear").onclick = () => { $("tl-from").value = ""; $("tl-to").value = ""; load(); };
 			load();
+		}
+
+		// ---------- RM Movement ----------
+		// RM has no header document, so these two panels ARE the supervisor's view of
+		// the floor: a per-line rollup (what is out, how long it has been out) above a
+		// coil list. "Flagged" is the row that needs a human — under the strict-receipt
+		// rule a flag can only come from a replayed offline scan that no longer matched
+		// the expected list, so the list stays short and every row is worth reading.
+		const RM_PILL = { "In Transit to Line": "prog", "Received": "done" };
+		async function renderRm(c) {
+			c.innerHTML = '<div id="rm-summary"></div>' +
+				'<div class="toolbar" style="margin-top:18px;">' +
+				'<input id="rm-q" placeholder="Search coil or line…" />' +
+				'<select id="rm-status"><option value="">All states</option><option>In Transit to Line</option><option>Received</option></select>' +
+				'<label style="font-size:12px;color:var(--sb-muted);display:flex;align-items:center;gap:6px;">' +
+				'<input type="checkbox" id="rm-flagged" style="width:auto;"> Flagged only</label>' +
+				dateControls("rm", { from: "", to: "" }) +
+				'<span style="flex:1;"></span>' + exportBtn("rm-x") + '</div><div id="rm-table"></div>';
+
+			const args = () => ({ q: $("rm-q").value, status: $("rm-status").value,
+				flagged: $("rm-flagged").checked ? 1 : 0, destination: state.rmDest || "", ...rangeArgs("rm") });
+
+			const loadSummary = async () => {
+				const s = await api("sbx_wmslite.console_api.get_rm_summary");
+				const t = s.totals;
+				const tiles = '<div class="kpis">' +
+					'<div class="kpi"><div class="k">In transit</div><div class="v">' + t.in_transit + '</div></div>' +
+					'<div class="kpi"><div class="k">Lines active</div><div class="v">' + t.lines + '</div></div>' +
+					'<div class="kpi"><div class="k">Ageing &ge; ' + s.stale_hours + 'h</div><div class="v"' +
+						(t.stale_lines ? ' style="color:#b9770e;"' : '') + '>' + t.stale_lines + '</div></div>' +
+					'<div class="kpi"><div class="k">Flagged receipts</div><div class="v"' +
+						(t.flagged ? ' style="color:#a23b2e;"' : '') + '>' + t.flagged + '</div></div></div>';
+				const rows = s.rows.length ? s.rows.map(r =>
+					'<tr><td><b>' + esc(r.destination) + '</b></td><td>' + r.in_transit +
+					'</td><td>' + (r.transit_weight ? Math.round(r.transit_weight) + ' kg' : '—') +
+					'</td><td' + (r.stale ? ' style="color:#b9770e;font-weight:700;"' : '') + '>' +
+						(r.oldest_hours == null ? '—' : r.oldest_hours + ' h') +
+					'</td><td' + (r.flagged ? ' style="color:#a23b2e;font-weight:700;"' : '') + '>' + (r.flagged || 0) +
+					'</td><td style="white-space:nowrap;">' + esc((r.last_receipt || '—').toString().slice(0, 16)) +
+					'</td><td><button class="sb-btn sb-btn--ghost sb-btn--inline" style="padding:6px 10px;font-size:12px;" data-line="' +
+						esc(r.destination) + '">View coils</button></td></tr>').join("")
+					: '<tr><td colspan="7" class="sb-muted">Nothing in transit and nothing flagged</td></tr>';
+				$("rm-summary").innerHTML = tiles +
+					'<div class="sb-label" style="margin:16px 0 6px;">By line</div>' +
+					'<table class="grid"><thead><tr><th>Line</th><th>In transit</th><th>Weight</th>' +
+					'<th>Oldest</th><th>Flagged</th><th>Last receipt</th><th></th></tr></thead><tbody>' +
+					rows + '</tbody></table>';
+				document.querySelectorAll("#rm-summary [data-line]").forEach(b => b.onclick = () => {
+					state.rmDest = b.dataset.line; $("rm-q").value = ""; load();
+				});
+			};
+
+			const load = async () => {
+				const r = await api("sbx_wmslite.console_api.get_rm_movement", args());
+				const scope = state.rmDest
+					? '<div class="sb-muted" style="margin:0 0 8px;font-size:13px;">Line <b>' + esc(state.rmDest) +
+						'</b> · <a href="#" id="rm-allines">show all lines</a></div>' : '';
+				$("rm-table").innerHTML = scope +
+					'<table class="grid"><thead><tr><th>Coil</th><th>State</th><th>Line</th><th>From bin</th>' +
+					'<th>Age</th><th>Dispatched</th><th>Received</th><th>Actions</th></tr></thead><tbody>' +
+					(r.rows.length ? r.rows.map(x => {
+						const flag = x.rm_unplanned
+							? ' <span class="pill canc" title="' +
+								(x.rm_expected_destination ? 'Was sent to ' + esc(x.rm_expected_destination) : 'Never dispatched') +
+								'">flagged</span>' : '';
+						const age = x.age_hours == null ? '—' : x.age_hours + ' h';
+						const act = x.rm_unplanned
+							? '<button class="sb-btn sb-btn--orange sb-btn--inline" style="padding:7px 12px;font-size:12px;" data-clear="' +
+								esc(x.coil_barcode) + '">Clear flag</button>' : '';
+						return '<tr><td><b>' + esc(x.coil_barcode) + '</b>' + flag +
+							'</td><td><span class="pill ' + (RM_PILL[x.rm_status] || "open") + '">' + esc(x.rm_status) + '</span>' +
+							'</td><td>' + esc(x.rm_destination || '—') +
+							'</td><td class="sb-muted">' + esc(x.rm_source_bin || '—') +
+							'</td><td' + (x.age_hours >= 4 ? ' style="color:#b9770e;font-weight:700;"' : '') + '>' + age +
+							'</td><td style="white-space:nowrap;" class="sb-muted">' + esc((x.rm_dispatched_at || '—').toString().slice(0, 16)) +
+							'</td><td style="white-space:nowrap;" class="sb-muted">' + esc((x.rm_received_at || '—').toString().slice(0, 16)) +
+							'</td><td style="white-space:nowrap;">' + act + '</td></tr>';
+					}).join("") : '<tr><td colspan="8" class="sb-muted">No RM movement matches these filters</td></tr>') +
+					'</tbody></table>' +
+					'<p class="sb-muted" style="font-size:12px;margin-top:8px;">Showing ' + r.rows.length + ' of ' + r.total + '</p>';
+				const all = $("rm-allines");
+				if (all) all.onclick = (e) => { e.preventDefault(); state.rmDest = ""; load(); };
+				document.querySelectorAll("#rm-table [data-clear]").forEach(b => b.onclick = async () => {
+					if (!confirm("Clear the exception flag on " + b.dataset.clear + "?\n\nThe coil stays where it is — this records that you have seen it.")) return;
+					b.disabled = true;
+					try { await api("sbx_wmslite.console_api.rm_clear_flag", { coil_barcode: b.dataset.clear }); await loadSummary(); await load(); }
+					catch (e) { alert(e.message); b.disabled = false; }
+				});
+			};
+
+			onExport("rm-x", () => exportUrl("rm", args()));
+			$("rm-q").oninput = () => { clearTimeout(window._rmd); window._rmd = setTimeout(load, 300); };
+			$("rm-status").onchange = load; $("rm-flagged").onchange = load;
+			$("rm-from").onchange = load; $("rm-to").onchange = load;
+			$("rm-clear").onclick = () => { $("rm-from").value = ""; $("rm-to").value = ""; load(); };
+			await loadSummary();
+			await load();
 		}
 
 		// ---------- SAP log ----------
@@ -283,7 +579,7 @@
 			const r = defaultRange();
 			c.innerHTML = '<div class="toolbar">' +
 				'<select id="sl-dir"><option value="">All directions</option><option>Inbound</option><option>Outbound</option></select>' +
-				dateControls("sl", r) + '</div><div id="sl-table"></div>';
+				dateControls("sl", r) + '<span style="flex:1;"></span>' + exportBtn("sl-x") + '</div><div id="sl-table"></div>';
 			const load = async () => {
 				const rows = await api("sbx_wmslite.console_api.get_sap_log", { direction: $("sl-dir").value, ...rangeArgs("sl") });
 				$("sl-table").innerHTML = '<table class="grid"><thead><tr><th>Time</th><th>Dir</th><th>Action</th><th>Result</th><th>Truck</th><th>Plan ID</th><th>Message</th><th>IP</th></tr></thead><tbody>' +
@@ -292,6 +588,7 @@
 						'</td><td class="sb-muted">' + esc(r.message || "") + '</td><td class="sb-muted">' + esc(r.source_ip || "") + '</td></tr>').join("") :
 						'<tr><td colspan="8" class="sb-muted">No SAP calls in range</td></tr>') + '</tbody></table>';
 			};
+			onExport("sl-x", () => exportUrl("saplog", { direction: $("sl-dir").value, ...rangeArgs("sl") }));
 			$("sl-dir").onchange = load; $("sl-from").onchange = load; $("sl-to").onchange = load;
 			$("sl-clear").onclick = () => { $("sl-from").value = ""; $("sl-to").value = ""; load(); };
 			load();
@@ -300,31 +597,263 @@
 		// ---------- import wizard ----------
 		let imp = {};
 		// ---------- Bin Inventory display ----------
+		// Two modes: "bin" (rollup, default — 760 bins beats 53k coils) and "coil".
+		// q/status live in state so switching mode keeps what you already typed.
+		let INV = { mode: "bin", start: 0, q: "", status: "" };
 		async function renderInventory(c) {
-			c.innerHTML = '<div class="toolbar"><input id="bi-q" placeholder="Search coil or bin…" />' +
+			c.innerHTML = '<div class="toolbar">' +
+				'<div class="seg" id="bi-seg">' +
+				'<button data-mode="bin" class="' + (INV.mode === "bin" ? "on" : "") + '">By Bin</button>' +
+				'<button data-mode="coil" class="' + (INV.mode === "coil" ? "on" : "") + '">By Coil</button></div>' +
+				'<input id="bi-q" placeholder="Coil or bin starts with…" value="' + esc(INV.q) + '" />' +
 				'<select id="bi-status"><option value="">All statuses</option><option>Available</option><option>Picked</option><option>Blocked</option></select>' +
-				'<span id="bi-count" class="sb-muted" style="font-size:13px;"></span></div><div id="bi-table"></div>';
-			const load = async () => {
-				const d = await api("sbx_wmslite.console_api.get_bin_inventory", { q: $("bi-q").value, status: $("bi-status").value });
-				$("bi-count").textContent = d.total + " coil(s) in inventory";
-				$("bi-table").innerHTML = '<table class="grid"><thead><tr><th>Bin</th><th>Coil</th><th>Grade</th><th>Weight</th><th>Zone/Aisle</th><th>Status</th><th>Source</th><th>Updated</th></tr></thead><tbody>' +
-					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td>' + esc(r.coil_barcode) + '</td><td>' + esc(r.material_grade || "") +
-						'</td><td>' + (r.weight || "") + '</td><td>' + esc([r.zone, r.aisle].filter(Boolean).join(" / ")) + '</td><td>' + esc(r.status || "") +
-						'</td><td class="sb-muted">' + esc(r.source || "") + '</td><td class="sb-muted">' + esc((r.updated_at || "").slice(0, 19)) + '</td></tr>').join("") :
-						'<tr><td colspan="8" class="sb-muted">No bin inventory yet — push it or import via the Import tab.</td></tr>') + '</tbody></table>';
+				'<span style="flex:1;"></span>' + exportBtn("bi-x") +
+				'</div><div id="bi-table"></div><div class="pager" id="bi-pg"></div>';
+			$("bi-status").value = INV.status;
+
+			let seq = 0;   // drop a stale response that lands after a newer one
+			const loadBins = async () => {
+				const mine = ++seq;
+				busy("bi-table", "bi-pg");
+				const d = await api("sbx_wmslite.console_api.get_bin_rollup", { q: $("bi-q").value, start: INV.start });
+				if (mine !== seq) return;
+				$("bi-table").innerHTML = '<table class="grid"><thead><tr><th>Bin</th><th>Site</th><th>Coils</th><th>Weight</th><th>Picked</th><th>Last Updated</th><th></th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td class="sb-muted">' + esc(r.site || "") + '</td><td>' + fmt(r.coils) + '</td><td>' + fmt(Math.round(r.weight || 0)) +
+						'</td><td>' + fmt(r.picked || 0) + '</td><td class="sb-muted">' + esc((r.last_updated || "").slice(0, 19)) +
+						'</td><td><button class="sb-btn sb-btn--ghost sb-btn--inline" data-bin="' + esc(r.bin_code) + '">View coils</button></td></tr>').join("") :
+						'<tr><td colspan="7" class="sb-muted">No bin inventory yet — push it or import via the Import tab.</td></tr>') + '</tbody></table>';
+				pager("bi-pg", d, (s) => { INV.start = s; loadBins(); });
+				$("bi-table").querySelectorAll("button[data-bin]").forEach(b => { b.onclick = () => binDrawer(b.dataset.bin); });
 			};
-			$("bi-q").oninput = () => { clearTimeout(window._bid); window._bid = setTimeout(load, 300); };
-			$("bi-status").onchange = load;
+
+			const loadCoils = async () => {
+				const mine = ++seq;
+				busy("bi-table", "bi-pg");
+				const d = await api("sbx_wmslite.console_api.get_bin_inventory",
+					{ q: $("bi-q").value, status: $("bi-status").value, start: INV.start });
+				if (mine !== seq) return;
+				// Weight (MT) is read off the coil's QR label server-side; the tooltip says
+				// whether it came from the QR or the stored (SAP feed) weight.
+				const wt = (r) => (r.weight || r.weight === 0) && Number(r.weight)
+					? '<td style="text-align:right;" title="' + esc(r.weight_source === "QR" ? "From the QR label" : "Stored weight (no QR scanned)") + '">' + Number(r.weight).toFixed(3) + '</td>'
+					: '<td class="sb-muted" style="text-align:right;">—</td>';
+				// Size: the 4th '-' part of the QR label, else the size SAP stored.
+				const sz = (r) => r.size
+					? '<td style="white-space:nowrap;" title="' + esc(r.size_source === "QR" ? "From the QR label" : "Stored size (no QR scanned)") + '">' + esc(r.size) + '</td>'
+					: '<td class="sb-muted">—</td>';
+				$("bi-table").innerHTML = '<table class="grid"><thead><tr><th>Bin</th><th>Coil</th><th>Site</th><th style="text-align:right;">Weight (MT)</th><th>Size</th><th>Status</th><th>Source</th><th>Updated</th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td>' + esc(r.coil_barcode) + '</td><td class="sb-muted">' + esc(r.site || "") + '</td>' + wt(r) + sz(r) + '<td>' + esc(r.status || "") +
+						'</td><td class="sb-muted">' + esc(r.source || "") + '</td><td class="sb-muted">' + esc((r.updated_at || "").slice(0, 19)) + '</td></tr>').join("") :
+						'<tr><td colspan="8" class="sb-muted">No coils match.</td></tr>') + '</tbody></table>';
+				pager("bi-pg", d, (s) => { INV.start = s; loadCoils(); });
+			};
+
+			const load = () => (INV.mode === "bin" ? loadBins() : loadCoils());
+			$("bi-seg").querySelectorAll("button").forEach(b => {
+				b.onclick = () => { INV.mode = b.dataset.mode; INV.start = 0; renderInventory(c); };
+			});
+			// status only applies to coil rows; hide it on the rollup to avoid a dead control
+			$("bi-status").style.display = INV.mode === "coil" ? "" : "none";
+			// exports whichever mode is on screen — rollup rows or coil rows
+			onExport("bi-x", () => exportUrl(INV.mode === "bin" ? "inventory_bin" : "inventory_coil",
+				{ q: $("bi-q").value, status: INV.mode === "coil" ? $("bi-status").value : "" }));
+			$("bi-q").oninput = () => { clearTimeout(window._bid); window._bid = setTimeout(() => { INV.q = $("bi-q").value; INV.start = 0; load(); }, 300); };
+			$("bi-status").onchange = () => { INV.status = $("bi-status").value; INV.start = 0; load(); };
 			load();
 		}
 
-		const IMPORT_DATASETS = ["Loading Plan", "Bin Inventory"];
-		async function renderImport(c) {
-			imp = { dataset: "Loading Plan" };
-			const help = {
-				"Loading Plan": "One row per coil. Required: <b>truck_number</b>, <b>coil_barcode</b>. Optional: sap_plan_id, material_grade, weight.",
-				"Bin Inventory": "One row per coil. Required: <b>coil_barcode</b>, <b>bin_code</b>. Optional: material_grade, weight, zone, aisle.",
+		// ---------- bin master (WMSLite Bin — the scannable location list) ----------
+		// Distinct from Inventory, which only knows bins that currently hold stock.
+		// With bin_validation_enabled on, a label missing from here is refused on the
+		// handheld, so this screen exists to answer "why won't this bay scan?" and to
+		// let a supervisor fix it without a deploy.
+		let BM = { q: "", disabled: "", start: 0 };
+		async function renderBinMaster(c) {
+			c.innerHTML = '<div class="toolbar">' +
+				'<input id="bm-q" placeholder="Bin code starts with…" value="' + esc(BM.q) + '" />' +
+				'<select id="bm-disabled"><option value="">Active and disabled</option><option value="0">Active only</option><option value="1">Disabled only</option></select>' +
+				'<span style="flex:1;"></span>' + exportBtn("bm-x") +
+				'</div><div id="bm-table"></div><div class="pager" id="bm-pg"></div>' +
+				'<div class="sb-card" style="padding:20px;max-width:620px;margin-top:22px;">' +
+				'<div class="sb-label">Bulk update</div><h2 class="sb-h2" style="margin:.2em 0 .6em;">Update from file</h2>' +
+				'<p class="sb-muted">Download the list above as Excel, add your new location codes to the bottom, and upload it back here. ' +
+				'Codes that aren\'t in the master yet are added; codes that are get their zone, aisle and flags updated. ' +
+				'<b>Nothing is ever deleted</b> — to take a bay out of use, set its Disabled column to 1 rather than removing the row.</p>' +
+				'<p class="sb-muted">Codes are stored exactly as typed, because they have to match what is printed on the label.</p>' +
+				'<input type="file" id="bm-file" accept=".csv,.xlsx" style="margin:12px 0;" />' +
+				'<div id="bm-out"></div></div>';
+			$("bm-disabled").value = BM.disabled;
+
+			let seq = 0;   // drop a stale response that lands after a newer one
+			const load = async () => {
+				const mine = ++seq;
+				busy("bm-table", "bm-pg");
+				const d = await api("sbx_wmslite.console_api.get_bin_master",
+					{ q: BM.q, disabled: BM.disabled, start: BM.start });
+				if (mine !== seq) return;
+				$("bm-table").innerHTML = '<table class="grid"><thead><tr><th>Bin Code</th><th>Site</th><th>Zone</th><th>Aisle</th><th>Line</th><th>Status</th><th>Source</th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td class="sb-muted">' + esc(r.site || "") + '</td><td>' + esc(r.zone || "") + '</td><td>' + esc(r.aisle || "") +
+						'</td><td>' + (r.is_line ? "Yes" : "") +
+						'</td><td>' + (r.disabled ? '<span class="pill canc">Disabled</span>' : '<span class="pill done">Active</span>') +
+						'</td><td class="sb-muted">' + esc(r.source || "") + '</td></tr>').join("") :
+						'<tr><td colspan="7" class="sb-muted">No locations match.</td></tr>') + '</tbody></table>';
+				pager("bm-pg", d, (s) => { BM.start = s; load(); });
 			};
+
+			onExport("bm-x", () => exportUrl("bin_master", { q: BM.q, disabled: BM.disabled }));
+			$("bm-q").oninput = () => { clearTimeout(window._bmd); window._bmd = setTimeout(() => { BM.q = $("bm-q").value; BM.start = 0; load(); }, 300); };
+			$("bm-disabled").onchange = () => { BM.disabled = $("bm-disabled").value; BM.start = 0; load(); };
+			// Same upload pipeline as the Import tab, pointed at this card's containers.
+			// onDone refreshes the table so the new codes appear without a nav round trip.
+			$("bm-file").onchange = (e) => {
+				imp = { dataset: "Bin Master", out: "bm-out", prev: "bm-prev", onDone: () => { BM.start = 0; load(); } };
+				uploadFile(e);
+			};
+			load();
+		}
+
+		// ---------- scan transactions (the append-only Coil Transaction feed) ----------
+		// 260k+ rows shared by two very different populations, so the source toggle
+		// is the primary control: "SAP Feed" vs "Inventory Count" answer different questions.
+		// q/date range live in state: switching the source toggle re-renders the
+		// toolbar, and rebuilding it from defaultRange() would silently throw away
+		// the range and search the user had already set.
+		let TXN = { source: "", start: 0, unprocessed: 0, q: "", range: null };
+		async function renderTransactions(c) {
+			const r = TXN.range || defaultRange();
+			c.innerHTML = '<div class="toolbar">' +
+				'<div class="seg" id="tx-seg">' +
+				'<button data-src="" class="' + (TXN.source === "" ? "on" : "") + '">All</button>' +
+				'<button data-src="Push API" class="' + (TXN.source === "Push API" ? "on" : "") + '">SAP Feed</button>' +
+				'<button data-src="In-app" class="' + (TXN.source === "In-app" ? "on" : "") + '">Inventory Count</button>' +
+				'</div>' +
+				'<input id="tx-q" placeholder="Coil or bin starts with…" value="' + esc(TXN.q) + '" />' +
+				dateControls("tx", r) +
+				'<label class="sb-muted" style="font-size:13px;display:flex;gap:6px;align-items:center;">' +
+				'<input type="checkbox" id="tx-unproc"' + (TXN.unprocessed ? " checked" : "") + ' /> Unprocessed only</label>' +
+				'<span style="flex:1;"></span>' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" id="tx-reproc">Reprocess pending</button>' +
+				exportBtn("tx-x") +
+				'</div>' +
+				'<div class="kpis" id="tx-kpis" style="margin-bottom:14px;"></div>' +
+				'<div id="tx-table"></div><div class="pager" id="tx-pg"></div>';
+
+			// Guards against a slow "All time" aggregate (~2s over 260k rows) leaving
+			// the previous result on screen — that reads as "the filter did nothing".
+			// The seq check also drops a stale response that lands after a newer one.
+			let seq = 0;
+			const load = async () => {
+				const mine = ++seq;
+				const ra = rangeArgs("tx");
+				busy("tx-table", "tx-pg");
+				const d = await api("sbx_wmslite.console_api.get_coil_transactions", Object.assign({
+					q: $("tx-q").value, source: TXN.source, start: TXN.start,
+					unprocessed: $("tx-unproc").checked ? 1 : 0,
+				}, ra));
+				if (mine !== seq) return;   // a newer request already answered
+				$("tx-kpis").innerHTML =
+					kpi(fmt(d.stats.total), "Scans in Range", true) + kpi(fmt(d.stats.sap_feed), "From SAP Feed") +
+					kpi(fmt(d.stats.in_app), "Inventory Count") + kpi(fmt(d.stats.unprocessed), "Unprocessed");
+				// SAP column: in-app Inventory Count scans (T1, LOCATION = bin) and RM line
+				// receipts (T2, LOCATION = line) are pushed; feed / dispatch / reversal rows
+				// have no sap_status and show "—". Retry re-arms a Failed push of either kind.
+				const sapCell = (r) => {
+					if (!r.sap_status) return '<td class="sb-muted">—</td>';
+					const retry = (r.sap_status === "Failed" && !r.reversed)
+						? ' <button class="sb-btn sb-btn--orange sb-btn--inline" style="padding:5px 10px;font-size:12px;" data-cretry="' + esc(r.name) + '">Retry</button>' : "";
+					return '<td style="white-space:nowrap;"><span class="pill ' + (T1_PILL[r.sap_status] || "canc") + '" title="' + esc(r.sap_message || "") + '">' + esc(r.sap_status) + '</span>' + retry + '</td>';
+				};
+				$("tx-table").innerHTML = '<table class="grid"><thead><tr><th>Scanned At</th><th>Coil</th><th>Bin</th><th>Site</th><th>Type</th><th>Source</th><th>By</th><th>Weight</th><th>QC</th><th>SAP</th><th></th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr class="click" data-txn="' + esc(r.name) + '">' +
+						'<td>' + esc((r.scanned_at || "").slice(0, 19)) + '</td><td><b>' + esc(r.coil_barcode || "") + '</b></td>' +
+						'<td>' + esc(r.bin_code || "—") + '</td><td class="sb-muted">' + esc(r.site || "") + '</td><td>' + esc(r.transaction_type || "—") + (r.reversed ? ' <span class="pill canc" title="Removed on the handheld after scanning">undone</span>' : "") + '</td>' +
+						'<td class="sb-muted">' + esc(r.source || "") + '</td><td class="sb-muted">' + esc(r.username || "—") + '</td>' +
+						'<td>' + (r.weight || "") + '</td><td>' + esc(r.qc || "—") + '</td>' + sapCell(r) +
+						'<td class="sb-muted">' + (r.processed ? "" : "pending") + '</td></tr>').join("") :
+						'<tr><td colspan="11" class="sb-muted">No scans in this range. Widen the dates or clear the filters.</td></tr>') + '</tbody></table>';
+				pager("tx-pg", d, (s) => { TXN.start = s; load(); });
+				$("tx-table").querySelectorAll("tr[data-txn]").forEach(tr => { tr.onclick = () => txnDrawer(tr.dataset.txn); });
+				$("tx-table").querySelectorAll("[data-cretry]").forEach(b => b.onclick = async (ev) => {
+					ev.stopPropagation();   // the row click opens the drawer
+					try { await api("sbx_wmslite.console_api.retry_sap_push", { txn: b.dataset.cretry }); load(); } catch (e) { alert(e.message); } });
+			};
+
+			$("tx-seg").querySelectorAll("button").forEach(b => {
+				b.onclick = () => { TXN.source = b.dataset.src; TXN.start = 0; renderTransactions(c); };
+			});
+			onExport("tx-x", () => exportUrl("transactions", Object.assign({
+				q: $("tx-q").value, source: TXN.source,
+				unprocessed: $("tx-unproc").checked ? 1 : 0,
+			}, rangeArgs("tx"))));
+			const keepRange = () => { TXN.range = { from: $("tx-from").value, to: $("tx-to").value }; };
+			$("tx-q").oninput = () => { clearTimeout(window._txd); window._txd = setTimeout(() => { TXN.q = $("tx-q").value; TXN.start = 0; load(); }, 300); };
+			$("tx-from").onchange = () => { keepRange(); TXN.start = 0; load(); };
+			$("tx-to").onchange = () => { keepRange(); TXN.start = 0; load(); };
+			$("tx-clear").onclick = () => { $("tx-from").value = ""; $("tx-to").value = ""; keepRange(); TXN.start = 0; load(); };
+			$("tx-unproc").onchange = () => { TXN.unprocessed = $("tx-unproc").checked ? 1 : 0; TXN.start = 0; load(); };
+			$("tx-reproc").onclick = async () => {
+				const b = $("tx-reproc"); b.disabled = true; b.textContent = "Deriving…";
+				try {
+					const r = await api("sbx_wmslite.console_api.reprocess_transactions");
+					alert(r.processed ? ("Derived " + r.processed + " scan(s) into Bin Inventory; " + r.remaining + " still pending.")
+									  : "Nothing pending — every scan is already derived.");
+				} catch (e) { alert(e.message); }
+				finally { b.disabled = false; b.textContent = "Reprocess pending"; load(); }
+			};
+			load();
+		}
+
+		async function txnDrawer(name) {
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">Scan</h2><p class="sb-muted">Loading…</p>');
+			const d = await api("sbx_wmslite.console_api.get_transaction_detail", { name: name });
+			const row = (l, v) => '<tr><td class="sb-muted" style="width:150px;">' + esc(l) + '</td><td>' + esc(v === null || v === undefined || v === "" ? "—" : v) + '</td></tr>';
+			let raw = d.raw_json || "";
+			try { raw = JSON.stringify(JSON.parse(raw), null, 2); } catch (e) { /* not JSON — show as-is */ }
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">' + esc(d.coil_barcode || "Scan") + '</h2>' +
+				'<p class="sb-muted">' + esc((d.scanned_at || "").slice(0, 19)) + ' · ' + esc(d.source || "") + '</p>' +
+				'<table class="grid" style="margin-top:12px;"><tbody>' +
+				row("Bin", d.bin_code) + row("Type", d.transaction_type) + row("Scanned by", d.username) +
+				row("Weight", d.weight) + row("Grade", d.material_grade) + row("QC", d.qc) +
+				row("Plant / Product", [d.plant, d.product].filter(Boolean).join(" / ")) +
+				row("Derived", d.processed ? ("yes · " + String(d.processed_at || "").slice(0, 19)) : "not yet") +
+				row("Bin Inventory", d.bin_inventory) + row("Idempotency key", d.txn_key) +
+				(d.reversed ? row("Undone", "yes · " + (d.reversed_by || "") + " · " + String(d.reversed_at || "").slice(0, 19)) : "") +
+				(d.sap_status ? row("SAP status", d.sap_status + (d.sap_attempts ? " · " + d.sap_attempts + " attempt(s)" : "")) +
+					row("SAP message", d.sap_message) + row("SAP last attempt", String(d.sap_pushed_at || "").slice(0, 19)) : "") +
+				'</tbody></table>' +
+				(raw ? '<div class="sb-label" style="margin:16px 0 6px;">Raw payload</div>' +
+					'<pre style="background:#f5f5f6;border:1px solid var(--sb-line);border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:320px;">' + esc(raw) + '</pre>' : "") +
+				(d.sap_request ? '<div class="sb-label" style="margin:16px 0 6px;">Sent to SAP (T1)</div>' +
+					'<pre style="background:#f5f5f6;border:1px solid var(--sb-line);border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:320px;">' + esc(d.sap_request) + '</pre>' : "") +
+				'<div class="row" style="display:flex;gap:8px;margin-top:18px;"><button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Close</button></div>');
+		}
+
+		async function binDrawer(bin) {
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">' + esc(bin) + '</h2><p class="sb-muted">Loading coils…</p>');
+			const d = await api("sbx_wmslite.console_api.get_bin_inventory", { bin_code: bin, limit: 200 });
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">' + esc(bin) + '</h2>' +
+				'<p class="sb-muted">' + fmt(d.total) + ' coil(s) in this bin</p>' +
+				'<table class="grid" style="margin-top:12px;"><thead><tr><th>Coil</th><th>Grade</th><th>Weight (MT)</th><th>Zone/Aisle</th><th>Status</th><th>Updated</th></tr></thead><tbody>' +
+				d.rows.map(r => '<tr><td><b>' + esc(r.coil_barcode) + '</b></td><td>' + esc(r.material_grade || "") + '</td><td>' + (Number(r.weight) ? Number(r.weight).toFixed(3) : "—") +
+					'</td><td>' + esc([r.zone, r.aisle].filter(Boolean).join(" / ") || "—") + '</td><td>' + esc(r.status || "") +
+					'</td><td class="sb-muted">' + esc((r.updated_at || "").slice(0, 19)) + '</td></tr>').join("") +
+				'</tbody></table>' +
+				(d.total > d.rows.length ? '<p class="sb-muted" style="margin-top:10px;">Showing first ' + d.rows.length + ' — search the bin in By Coil for the rest.</p>' : "") +
+				'<div class="row" style="display:flex;gap:8px;margin-top:18px;"><button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Close</button></div>');
+		}
+
+		const IMPORT_DATASETS = ["Loading Plan", "Bin Inventory", "Bin Master"];
+		const IMPORT_HELP = {
+			"Loading Plan": "One row per coil. Required: <b>truck_number</b>, <b>coil_barcode</b>. Optional: sap_plan_id, material_grade, weight.",
+			"Bin Inventory": "One row per coil. Required: <b>coil_barcode</b>, <b>bin_code</b>. Optional: material_grade, weight, zone, aisle.",
+			"Bin Master": "One row per location. Required: <b>bin_code</b>. Optional: zone, aisle, is_line, disabled. Adds codes that aren't in the master yet and updates the ones that are — nothing is ever deleted.",
+		};
+		// What the finished-import line counts, per dataset.
+		const IMPORT_UNIT = { "Loading Plan": "plan", "Bin Inventory": "coil", "Bin Master": "location" };
+
+		async function renderImport(c) {
+			imp = { dataset: "Loading Plan", out: "imp-out", prev: "imp-prev" };
+			const help = IMPORT_HELP;
 			c.innerHTML =
 				'<div class="sb-card" style="padding:20px;max-width:620px;">' +
 				'<div class="sb-label">Upload</div><h2 class="sb-h2" style="margin:.2em 0 .6em;">Import data</h2>' +
@@ -340,9 +869,12 @@
 			$("imp-dataset").onchange = (e) => { imp.dataset = e.target.value; $("imp-help").innerHTML = help[imp.dataset]; tplLink(); $("imp-out").innerHTML = ""; };
 			$("imp-file").onchange = uploadFile;
 		}
+		// The upload pipeline is shared: the Import tab drives it into #imp-out, and
+		// the Bin Master tab into its own card. `imp.out` / `imp.prev` name the two
+		// containers so neither view needs its own copy of this flow.
 		async function uploadFile(e) {
 			const file = e.target.files[0]; if (!file) return;
-			const out = $("imp-out"); out.innerHTML = '<p class="sb-muted">Uploading…</p>';
+			const out = $(imp.out); out.innerHTML = '<p class="sb-muted">Uploading…</p>';
 			const fd = new FormData(); fd.append("file", file); fd.append("is_private", 1);
 			const up = await fetch("/api/method/upload_file", { method: "POST", headers: { "X-Frappe-CSRF-Token": CSRF }, body: fd });
 			const uj = await up.json(); imp.file_url = uj.message.file_url; imp.file_name = file.name;
@@ -352,37 +884,179 @@
 				p.columns.map(col => '<div style="display:flex;gap:8px;align-items:center;margin:6px 0;"><label style="width:130px;font-size:13px;">' + col + (p.required.includes(col) ? ' *' : '') + '</label>' +
 					'<select data-col="' + col + '"><option value="">— none —</option>' + p.headers.map(h => '<option ' + (imp.mapping[col] === h ? "selected" : "") + '>' + esc(h) + '</option>').join("") + '</select></div>').join("") +
 				'<p class="sb-muted">' + p.total_rows + ' data rows.</p>' +
-				'<button class="sb-btn sb-btn--primary" id="imp-preview" style="margin-top:8px;">Preview</button><div id="imp-prev"></div>';
+				'<button class="sb-btn sb-btn--primary" id="imp-preview" style="margin-top:8px;">Preview</button><div id="' + imp.prev + '"></div>';
 			$("imp-preview").onclick = previewImport;
 		}
-		function readMapping() { const m = {}; document.querySelectorAll("#imp-out select[data-col]").forEach(s => { if (s.value) m[s.dataset.col] = s.value; }); return m; }
+		function readMapping() { const m = {}; document.querySelectorAll("#" + imp.out + " select[data-col]").forEach(s => { if (s.value) m[s.dataset.col] = s.value; }); return m; }
 		async function previewImport() {
 			imp.mapping = readMapping();
 			const r = await api("sbx_wmslite.console_api.import_preview", { file_url: imp.file_url, mapping: JSON.stringify(imp.mapping), dataset: imp.dataset });
-			$("imp-prev").innerHTML = '<div class="sb-card" style="padding:14px;margin-top:12px;background:var(--sb-bg);">' +
-				'<b>' + r.plans + '</b> ' + (r.group_unit || "plans") + ', <b>' + r.total_rows + '</b> rows, <b style="color:' + (r.errors ? '#a23b2e' : 'var(--sb-green)') + ';">' + r.errors + '</b> error(s).' +
+			// An upsert's headline number is how many rows are NEW, so when the server
+			// splits them out, show both — "1265 rows" alone hides whether this file
+			// adds three bays or rewrites the whole master.
+			const split = (r.new_count == null) ? "" :
+				' <span class="sb-muted">(' + r.new_count + ' new, ' + r.existing_count + ' already in the master)</span>';
+			$(imp.prev).innerHTML = '<div class="sb-card" style="padding:14px;margin-top:12px;background:var(--sb-bg);">' +
+				'<b>' + r.plans + '</b> ' + (r.group_unit || "plans") + ', <b>' + r.total_rows + '</b> rows, <b style="color:' + (r.errors ? '#a23b2e' : 'var(--sb-green)') + ';">' + r.errors + '</b> error(s).' + split +
 				(r.sample_errors.length ? '<ul>' + r.sample_errors.map(e => '<li class="sb-muted">' + esc(e) + '</li>').join("") + '</ul>' : '') +
 				'<button class="sb-btn sb-btn--orange" id="imp-commit" style="margin-top:10px;"' + (r.errors ? "" : "") + '>Commit import</button></div>';
 			$("imp-commit").onclick = commitImport;
 		}
 		async function commitImport() {
 			const r = await api("sbx_wmslite.console_api.import_commit", { file_url: imp.file_url, mapping: JSON.stringify(imp.mapping), label: imp.file_name, file_name: imp.file_name, dataset: imp.dataset });
-			imp.batch = r.batch; $("imp-prev").innerHTML = '<p class="sb-muted">Importing… (batch ' + esc(r.batch) + ')</p>';
+			imp.batch = r.batch; $(imp.prev).innerHTML = '<p class="sb-muted">Importing… (batch ' + esc(r.batch) + ')</p>';
 			poll();
 		}
 		async function poll() {
 			const s = await api("sbx_wmslite.console_api.get_import_status", { batch: imp.batch });
 			if (s.done) {
-				$("imp-prev").innerHTML = '<div class="sb-card" style="padding:14px;margin-top:12px;"><b>' + esc(s.status) + '</b> — ' + s.inserted + ' plan(s) imported, ' + s.errors + ' error(s).' +
+				const unit = IMPORT_UNIT[imp.dataset] || "row";
+				$(imp.prev).innerHTML = '<div class="sb-card" style="padding:14px;margin-top:12px;"><b>' + esc(s.status) + '</b> — ' + s.inserted + ' ' + unit + '(s) imported, ' + s.errors + ' error(s).' +
 					(s.error_report ? '<pre style="white-space:pre-wrap;font-size:12px;">' + esc(s.error_report) + '</pre>' : '') + '</div>';
+				if (imp.onDone) imp.onDone();
 			} else { setTimeout(poll, 1500); }
+		}
+
+		// ---------- users (WMS Manager) ----------
+		let U = { assignable: [], is_sm: 0 };
+		async function renderUsers(c) {
+			c.innerHTML = '<div class="toolbar"><input id="u-q" placeholder="Search name or login…" />' +
+				'<span class="spacer" style="flex:1;"></span>' +
+				'<button class="sb-btn sb-btn--primary sb-btn--inline" id="u-add">+ Add user</button></div>' +
+				'<div id="u-table"></div>';
+			const load = async () => {
+				const d = await api("sbx_wmslite.user_api.list_wms_users");
+				U = { assignable: d.assignable_roles || [], is_sm: d.is_system_manager };
+				const q = ($("u-q").value || "").toLowerCase();
+				const rows = (d.users || []).filter((u) => !q ||
+					(u.full_name || "").toLowerCase().includes(q) || u.name.toLowerCase().includes(q));
+				$("u-table").innerHTML = '<table class="grid"><thead><tr><th>User</th><th>Login</th><th>Roles</th>' +
+					'<th>Status</th><th>Last active</th><th>Actions</th></tr></thead><tbody>' +
+					(rows.length ? rows.map((u) => {
+						const roles = (u.roles || []).map((r) => '<span class="pill open" style="margin-right:4px;">' + esc(r) + '</span>').join("") ||
+							'<span class="sb-muted">none</span>';
+						const other = (u.other_roles || []).length
+							? '<div class="sb-muted" style="font-size:11px;margin-top:3px;">+ ' + esc(u.other_roles.join(", ")) + '</div>' : '';
+						const status = u.enabled
+							? '<span class="pill done">Active</span>' : '<span class="pill canc">Disabled</span>';
+						const actions = u.manageable
+							? '<button class="sb-btn sb-btn--ghost sb-btn--inline" style="padding:5px 10px;font-size:11px;" data-roles="' + esc(u.name) + '">Roles</button> ' +
+							  '<button class="sb-btn sb-btn--ghost sb-btn--inline" style="padding:5px 10px;font-size:11px;" data-pwd="' + esc(u.name) + '">Password</button> ' +
+							  '<button class="sb-btn ' + (u.enabled ? 'sb-btn--orange' : 'sb-btn--primary') + ' sb-btn--inline" style="padding:5px 10px;font-size:11px;" data-en="' + esc(u.name) + '" data-to="' + (u.enabled ? 0 : 1) + '">' + (u.enabled ? 'Disable' : 'Enable') + '</button>'
+							: '<span class="sb-muted" style="font-size:11px;">🔒 ' + esc(u.locked_reason || "Locked") + '</span>';
+						return '<tr><td><b>' + esc(u.full_name) + '</b>' + other + '</td><td class="sb-muted">' + esc(u.name) + '</td>' +
+							'<td>' + roles + '</td><td>' + status + '</td>' +
+							'<td class="sb-muted" style="white-space:nowrap;">' + esc((u.last_active || "—").slice(0, 16)) + '</td>' +
+							'<td style="white-space:nowrap;">' + actions + '</td></tr>';
+					}).join("") : '<tr><td colspan="6" class="sb-muted">No WMS users yet — use “Add user”.</td></tr>') +
+					'</tbody></table>';
+				document.querySelectorAll("#u-table [data-roles]").forEach((b) => b.onclick = () => rolesDrawer(b.dataset.roles, rows.find((x) => x.name === b.dataset.roles)));
+				document.querySelectorAll("#u-table [data-pwd]").forEach((b) => b.onclick = () => passwordDrawer(b.dataset.pwd));
+				document.querySelectorAll("#u-table [data-en]").forEach((b) => b.onclick = async () => {
+					const to = b.dataset.to === "1";
+					if (!confirm((to ? "Enable " : "Disable ") + b.dataset.en + "?")) return;
+					try { await api("sbx_wmslite.user_api.set_user_enabled", { user: b.dataset.en, enabled: to ? 1 : 0 }); load(); }
+					catch (e) { alert(e.message); }
+				});
+			};
+			$("u-q").oninput = () => { clearTimeout(window._uq); window._uq = setTimeout(load, 250); };
+			$("u-add").onclick = () => addUserDrawer(load);
+			window._uReload = load;
+			load();
+		}
+
+		function roleChecks(selected) {
+			const sel = new Set(selected || []);
+			return U.assignable.map((r) =>
+				'<label style="display:flex;gap:8px;align-items:center;margin:7px 0;font-size:14px;">' +
+				'<input type="checkbox" data-role="' + esc(r) + '"' + (sel.has(r) ? " checked" : "") + ' /> ' + esc(r) + '</label>').join("");
+		}
+		const pickedRoles = () => Array.from(document.querySelectorAll("#drawer input[data-role]:checked")).map((i) => i.dataset.role);
+
+		function addUserDrawer(onDone) {
+			openDrawer(
+				'<h2 class="sb-h1" style="margin:0 0 4px;">Add WMS user</h2>' +
+				'<p class="sb-muted">Creates a login for a warehouse user and assigns their roles.</p>' +
+				'<div style="display:grid;gap:10px;max-width:420px;margin-top:14px;">' +
+				'<label style="font-size:12px;color:var(--sb-muted);">First name *<input id="nu-first" class="sb-input" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<label style="font-size:12px;color:var(--sb-muted);">Last name<input id="nu-last" class="sb-input" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<label style="font-size:12px;color:var(--sb-muted);">Login ID *<input id="nu-id" class="sb-input" placeholder="operator1@wms.local" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<div class="sb-muted" style="font-size:11px;margin-top:-6px;">Workers without email can use a made-up ID like <b>operator1@wms.local</b> — no email is sent.</div>' +
+				'<label style="font-size:12px;color:var(--sb-muted);">Mobile<input id="nu-mob" class="sb-input" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<label style="font-size:12px;color:var(--sb-muted);">Initial password *<input id="nu-pwd" type="password" class="sb-input" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<div class="sb-muted" style="font-size:11px;margin-top:-6px;">Share this with the worker — they can change it after logging in.</div>' +
+				'<div><div class="sb-label" style="margin:6px 0 2px;">Roles *</div>' + roleChecks([]) + '</div>' +
+				'</div>' +
+				'<div class="row" style="display:flex;gap:8px;margin-top:18px;">' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Cancel</button>' +
+				'<button class="sb-btn sb-btn--primary sb-btn--inline" id="nu-save">Create user</button></div>' +
+				'<div id="nu-msg" style="margin-top:10px;"></div>'
+			);
+			$("nu-save").onclick = async () => {
+				const btn = $("nu-save"); btn.disabled = true; btn.textContent = "Creating…";
+				try {
+					const r = await api("sbx_wmslite.user_api.create_wms_user", {
+						user_id: $("nu-id").value, first_name: $("nu-first").value, last_name: $("nu-last").value,
+						mobile_no: $("nu-mob").value, password: $("nu-pwd").value, roles: JSON.stringify(pickedRoles()),
+					});
+					closeDrawer(); if (onDone) onDone();
+				} catch (e) {
+					$("nu-msg").innerHTML = '<div style="color:#a23b2e;font-size:13px;">' + esc(e.message) + '</div>';
+					btn.disabled = false; btn.textContent = "Create user";
+				}
+			};
+		}
+
+		function rolesDrawer(user, row) {
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">Roles</h2><p class="sb-muted">' + esc(user) + '</p>' +
+				'<div style="margin-top:12px;max-width:420px;">' + roleChecks((row && row.roles) || []) + '</div>' +
+				'<div class="row" style="display:flex;gap:8px;margin-top:18px;">' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Cancel</button>' +
+				'<button class="sb-btn sb-btn--primary sb-btn--inline" id="ur-save">Save roles</button></div>' +
+				'<div id="ur-msg" style="margin-top:10px;"></div>');
+			$("ur-save").onclick = async () => {
+				try { await api("sbx_wmslite.user_api.set_user_roles", { user: user, roles: JSON.stringify(pickedRoles()) });
+					closeDrawer(); if (window._uReload) window._uReload(); }
+				catch (e) { $("ur-msg").innerHTML = '<div style="color:#a23b2e;font-size:13px;">' + esc(e.message) + '</div>'; }
+			};
+		}
+
+		function passwordDrawer(user) {
+			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">Reset password</h2><p class="sb-muted">' + esc(user) + '</p>' +
+				'<label style="font-size:12px;color:var(--sb-muted);display:block;margin-top:14px;max-width:420px;">New password' +
+				'<input id="up-pwd" type="password" class="sb-input" style="width:100%;padding:9px 10px;border:1px solid var(--sb-line);border-radius:6px;" /></label>' +
+				'<div class="sb-muted" style="font-size:11px;margin-top:6px;">Share the new password with the user.</div>' +
+				'<div class="row" style="display:flex;gap:8px;margin-top:18px;">' +
+				'<button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Cancel</button>' +
+				'<button class="sb-btn sb-btn--primary sb-btn--inline" id="up-save">Set password</button></div>' +
+				'<div id="up-msg" style="margin-top:10px;"></div>');
+			$("up-save").onclick = async () => {
+				try { await api("sbx_wmslite.user_api.reset_user_password", { user: user, password: $("up-pwd").value });
+					closeDrawer(); if (window._uReload) window._uReload(); }
+				catch (e) { $("up-msg").innerHTML = '<div style="color:#a23b2e;font-size:13px;">' + esc(e.message) + '</div>'; }
+			};
 		}
 
 		// ---------- drawer ----------
 		function openDrawer(html) { $("drawer").innerHTML = html; $("drawer").classList.add("show"); $("scrim2").classList.add("show"); }
 		function closeDrawer() { $("drawer").classList.remove("show"); $("scrim2").classList.remove("show"); }
 
-		renderNav(); render();
+		// ---------- sign out ----------
+		// Frappe's built-in logout clears the session cookie; we send the CSRF token
+		// because it is a state-changing POST. Redirect regardless of the outcome —
+		// a failed call must not leave the user stuck on a console they can't use.
+		$("logout").onclick = async () => {
+			if (!confirm("Sign out of the WMS Core console?")) return;
+			try {
+				await fetch("/api/method/logout", {
+					method: "POST", credentials: "same-origin",
+					headers: { "X-Frappe-CSRF-Token": CSRF },
+				});
+			} catch (e) { /* offline or server error — redirect anyway */ }
+			window.location.href = "/login";
+		};
+
+		loadFilterOptions().then(() => { renderNav(); syncGlobalBar(); render(); });
 	</script>
 </body>
 </html>

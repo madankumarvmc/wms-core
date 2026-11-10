@@ -188,7 +188,7 @@ All call `_require_count_role()` first.
 | Endpoint | Purpose |
 |---|---|
 | `my_tasks()` | Tasks the current user may perform (for the picker). |
-| `count_open_bin(raw_bin)` | Decode bin, return existing coils recorded in this bin (resume support) + bin metadata. |
+| `count_open_bin(raw_bin)` | Decode + validate bin; return only the **current operator's own in-app count scans in this bin from today** (resume support, each with `cid` = txn_key). Blind count: coils SAP maps to the bin are never returned. |
 | `count_scan(bin_code, raw_qr, client_event_id, qc=0)` | Decode coil; create/update a `Coil Transaction` (`source="In-app"`, `transaction_type="Inventory Count"`); derive immediately; return `{coil_id, previous_bin, moved, qc, existing}`. |
 | `count_set_qc(bin_code, coil_barcode, qc)` | Toggle QC hold on a just-scanned coil. |
 | `count_remove(bin_code, coil_barcode, client_event_id)` | Undo a mis-scan in the current session. |
@@ -279,7 +279,10 @@ the derived batch code matches exactly what the SAP/push feed produces.
   the scan's queued time; latest-wins may or may not apply. Acceptable; document
   that online counts supersede stale offline replays only by timestamp.
 - App closed mid-bin → nothing lost (each scan persisted). On reopen, `count_open_bin`
-  repopulates the in-progress list.
+  repopulates the in-progress list from the operator's own scans today in that bin.
+  Coils already mapped to the bin (SAP feed, other operators) are never pre-listed —
+  the count is blind. Re-scanning a coil that is already there just records another
+  transaction; location stays latest-timestamp-wins.
 
 **QC**
 - QC hold toggled after scan → `count_set_qc` updates the row's `qc`; reflected in

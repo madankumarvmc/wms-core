@@ -20,7 +20,21 @@
   "sized",
   "zone",
   "aisle",
+  "section_rm",
+  "rm_status",
+  "rm_destination",
+  "rm_source_bin",
+  "rm_cycle",
+  "column_break_rm",
+  "rm_dispatched_by",
+  "rm_dispatched_at",
+  "rm_received_by",
+  "rm_received_at",
+  "column_break_rm2",
+  "rm_unplanned",
+  "rm_expected_destination",
   "section_meta",
+  "coil_qr_raw",
   "source",
   "scanned_at",
   "updated_at"
@@ -92,7 +106,7 @@
    "label": "Size"
   },
   {
-   "description": "Optional — used to order the picker's walk path.",
+   "description": "Optional \u2014 used to order the picker's walk path.",
    "fieldname": "zone",
    "fieldtype": "Data",
    "label": "Zone"
@@ -101,6 +115,96 @@
    "fieldname": "aisle",
    "fieldtype": "Data",
    "label": "Aisle"
+  },
+  {
+   "description": "Raw-material movement (gate -> production line). While a coil is IN TRANSIT it keeps its warehouse Bin Code, because the loading flow reads that and the coil is in neither place; its location is Destination + RM Status. On RECEIPT the Bin Code is set to the destination line, because an operator is standing there holding it.",
+   "fieldname": "section_rm",
+   "fieldtype": "Section Break",
+   "label": "RM Movement"
+  },
+  {
+   "description": "Blank = the coil has never moved to a line. Deliberately has NO default: a default would rewrite every existing row on migrate and put legacy coils into a state they were never in.",
+   "fieldname": "rm_status",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "RM Status",
+   "options": "\nIn Transit to Line\nReceived",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "description": "Destination line the coil was dispatched to. Retained after receipt for audit.",
+   "fieldname": "rm_destination",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "RM Destination",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "description": "The bin the coil sat in when it was dispatched. Blank means its location was unknown at dispatch.",
+   "fieldname": "rm_source_bin",
+   "fieldtype": "Data",
+   "label": "RM Source Bin",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Bumped on each live dispatch. Ties a receipt (and an undo) to one specific movement, so a coil's second trip can never be confused with its first.",
+   "fieldname": "rm_cycle",
+   "fieldtype": "Int",
+   "label": "RM Cycle",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_rm",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "rm_dispatched_by",
+   "fieldtype": "Link",
+   "label": "Dispatched By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rm_dispatched_at",
+   "fieldtype": "Datetime",
+   "label": "Dispatched At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rm_received_by",
+   "fieldtype": "Link",
+   "label": "Received By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rm_received_at",
+   "fieldtype": "Datetime",
+   "label": "Received At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_rm2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "Received at a line with no matching in-transit record \u2014 either never dispatched, or dispatched somewhere else. Informational: the line is never blocked.",
+   "fieldname": "rm_unplanned",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "RM Unplanned Receipt",
+   "read_only": 1
+  },
+  {
+   "description": "Where a mis-routed coil was actually headed. Cleared on every live dispatch.",
+   "fieldname": "rm_expected_destination",
+   "fieldtype": "Data",
+   "label": "RM Expected Destination",
+   "read_only": 1
   },
   {
    "fieldname": "section_meta",
@@ -115,7 +219,7 @@
    "read_only": 1
   },
   {
-   "description": "Scan timestamp from the source feed. The latest scan wins — an older scan never overwrites a newer one.",
+   "description": "Scan timestamp from the source feed. The latest scan wins \u2014 an older scan never overwrites a newer one.",
    "fieldname": "scanned_at",
    "fieldtype": "Datetime",
    "label": "Scanned At",
@@ -125,6 +229,13 @@
    "fieldname": "updated_at",
    "fieldtype": "Datetime",
    "label": "Updated At",
+   "read_only": 1
+  },
+  {
+   "description": "The most recent full scan string for this coil, before extraction. Reconciliation only \u2014 coil_barcode is the identity.",
+   "fieldname": "coil_qr_raw",
+   "fieldtype": "Data",
+   "label": "Coil QR (raw)",
    "read_only": 1
   }
  ],
@@ -167,6 +278,16 @@
   {
    "read": 1,
    "role": "Inventory Recorder",
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "RM Gate Operator",
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "RM Line Operator",
    "write": 1
   }
  ],

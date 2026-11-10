@@ -1,0 +1,1065 @@
+"""Unit tests for RM Movement (plant gate -> production line).
+
+Covers both legs, the offline-ordering guards that are the whole reason this
+module has a state machine rather than two setters, the undo/reversal path, the
+ledger reconciliation that survives a Bin Inventory row being deleted underneath
+it, and the cross-flow isolation from Inventory Count.
+
+The invariant asserted most often here: **RM never writes Bin Inventory.bin_code.**
+The truck-loading flow reads that field to direct the picker, so a coil going to a
+production line must keep its warehouse bin.
+
+All data is __TEST__-prefixed and torn down per the prod-test convention (the
+endpoints commit, which defeats FrappeTestCase's rollback). Run:
+
+    bench --site <site> run-tests --app sbx_wmslite --module sbx_wmslite.tests.test_rm
+"""
+
+import json
+
+import frappe
+from frappe.tests.utils import FrappeTestCase
+from frappe.utils import add_to_date, now_datetime
+
+from sbx_wmslite import api, bin_api, count_api, rm_api
+from sbx_wmslite.tests.settings_guard import SettingsGuard
+
+LINE_A = "__TEST__RM_LINE_A"
+LINE_B = "__TEST__RM_LINE_B"
+YARD = "__TEST__RM_YARD"
+
+PREFIX = "__TEST__RM"
+
+
+# Every field these tests write is listed here so tearDownClass can put the
+# site's own values back — this Single is shared with the live site.
+SETTINGS = SettingsGuard(
+	"rm_enabled", "rm_received_history_hours", "rm_unknown_bin",
+	"count_enabled", "count_push_enabled", "rm_push_enabled", "qr_decode_rule",
+	"bin_decode_rule", "bin_validation_enabled",
+)
+
+
+def _settings():
+	SETTINGS.apply(
+		rm_enabled=1,
+		rm_received_history_hours=12,
+		rm_unknown_bin="__TEST__RM_UNKNOWN",
+		count_enabled=1,
+		# A few cases call count_scan; SAP is not mocked here, so keep the count
+		# push OFF or those __TEST__ coils would be POSTed to SAP for real.
+		count_push_enabled=0,
+		# Same for the T2 receipt push: rm_receive arms it, and a live switch would
+		# enqueue a real sweep against the configured SAP host.
+		rm_push_enabled=0,
+		qr_decode_rule="Identity",
+		bin_decode_rule="Identity",
+		# The existing cases scan bare coil codes straight into the endpoints; the
+		# location master is not seeded in tests, so validation stays off except
+		# where a case turns it on.
+		bin_validation_enabled=0,
+	)
+
+
+def _cleanup():
+	for dt in ("Coil Transaction", "Bin Inventory"):
+		for n in frappe.get_all(dt, filters={"coil_barcode": ["like", PREFIX + "%"]},
+								pluck="name"):
+			frappe.delete_doc(dt, n, force=1, ignore_permissions=True)
+	frappe.db.commit()
+
+
+class TestRMMovement(FrappeTestCase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		_settings()
+		_cleanup()
+
+	@classmethod
+	def tearDownClass(cls):
+		_cleanup()
+		SETTINGS.restore()
+		super().tearDownClass()
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		_cleanup()
+
+	# ---- helpers ----
+	def _coil(self, n=1):
+		return f"{PREFIX}_C_{self._testMethodName}_{n}"
+
+	def _seed(self, coil, bin_code=YARD, **kw):
+		"""A coil the SAP feed already knows about, sitting in a warehouse bin."""
+		data = {"bin_code": bin_code, "material_grade": "X52", "weight": 4200}
+		data.update(kw)
+		bin_api.upsert_bin(coil, data, source="Push API")
+		frappe.db.commit()
+
+	def _bi(self, coil, field):
+		return frappe.db.get_value("Bin Inventory", coil, field)
+
+	# ======================================================================
+	# dispatch leg
+	# ======================================================================
+	def test_dispatch_sets_in_transit_and_never_touches_bin_code(self):
+		coil = self._coil()
+		self._seed(coil)
+		r = rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		self.assertEqual(r["coil_id"], coil)
+		self.assertEqual(r["rm_status"], rm_api.IN_TRANSIT)
+		self.assertEqual(r["rm_destination"], LINE_A)
+		self.assertEqual(r["rm_source_bin"], YARD)
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.IN_TRANSIT)
+		self.assertEqual(self._bi(coil, "rm_cycle"), 1)
+		self.assertTrue(self._bi(coil, "rm_dispatched_at"))
+		# THE invariant: the loading flow's view of this coil is unchanged.
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+		self.assertEqual(self._bi(coil, "status"), "Available")
+
+	def test_dispatch_ledger_row_shape(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		txn = frappe.get_all("Coil Transaction", filters={"txn_key": "d1"},
+							 fields=["source", "transaction_type", "bin_code", "processed",
+									 "rm_destination", "rm_cycle", "reversed"])
+		self.assertEqual(len(txn), 1)
+		self.assertEqual(txn[0].source, "In-app")
+		self.assertEqual(txn[0].transaction_type, rm_api.TXN_DISPATCH)
+		self.assertEqual(txn[0].rm_destination, LINE_A)
+		self.assertEqual(txn[0].rm_cycle, 1)
+		self.assertEqual(txn[0].reversed, 0)
+		# processed=1 so the derive sweep never sees it; bin_code blank so nothing
+		# can mistake an RM row for a location fact.
+		self.assertEqual(txn[0].processed, 1)
+		self.assertFalse(txn[0].bin_code)
+
+	def test_dispatch_idempotent(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="dup1")
+		r2 = rm_api.rm_dispatch(LINE_A, coil, client_event_id="dup1")
+		self.assertTrue(r2.get("idempotent"))
+		self.assertEqual(frappe.db.count("Coil Transaction", {"txn_key": "dup1"}), 1)
+
+	def test_dispatch_same_destination_dedupes(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="s1")
+		r = rm_api.rm_dispatch(LINE_A, coil, client_event_id="s2")
+		self.assertTrue(r.get("already_in_transit"))
+		self.assertEqual(self._bi(coil, "rm_cycle"), 1)  # same movement, not a new one
+
+	def test_dispatch_different_destination_reroutes(self):
+		"""A re-route still keeps the same trip — once it has been confirmed.
+
+		The confirmation itself is covered in TestRMReroute; this case is about what
+		the re-route does to the coil, not about being asked.
+		"""
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="r1")
+		r = rm_api.rm_dispatch(LINE_B, coil, client_event_id="r2", confirm_reroute=1)
+		self.assertEqual(r.get("rerouted_from"), LINE_A)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_B)
+		self.assertEqual(self._bi(coil, "rm_cycle"), 1)  # a redirect, not a new trip
+
+	def test_dispatch_unknown_coil_creates_placeholder_row(self):
+		coil = self._coil()
+		self.assertFalse(frappe.db.exists("Bin Inventory", coil))
+		r = rm_api.rm_dispatch(LINE_A, coil, client_event_id="u1")
+		self.assertEqual(r["rm_status"], rm_api.IN_TRANSIT)
+		self.assertTrue(frappe.db.exists("Bin Inventory", coil))
+		self.assertEqual(self._bi(coil, "bin_code"), "__TEST__RM_UNKNOWN")
+		self.assertEqual(self._bi(coil, "source"), "In-app")
+		# scanned_at MUST be null, or upsert_bin's staleness guard would let this
+		# placeholder outrank the first real feed scan.
+		self.assertIsNone(self._bi(coil, "scanned_at"))
+
+	def test_dispatch_never_blanks_feed_attributes(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="a1")
+		self.assertEqual(self._bi(coil, "material_grade"), "X52")
+		self.assertEqual(self._bi(coil, "weight"), 4200)
+
+	def test_open_destination_lists_in_transit(self):
+		c1, c2 = self._coil(1), self._coil(2)
+		self._seed(c1)
+		self._seed(c2)
+		rm_api.rm_dispatch(LINE_A, c1, client_event_id="o1")
+		rm_api.rm_dispatch(LINE_A, c2, client_event_id="o2")
+		out = rm_api.rm_open_destination(LINE_A)
+		self.assertEqual(out["destination"], LINE_A)
+		self.assertEqual(out["count"], 2)
+		self.assertEqual({c["coil_barcode"] for c in out["coils"]}, {c1, c2})
+
+	# ======================================================================
+	# receipt leg
+	# ======================================================================
+	def test_receive_expected_coil(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		r = rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		self.assertEqual(r["rm_status"], rm_api.RECEIVED)
+		self.assertFalse(r.get("unplanned"))
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
+		self.assertTrue(self._bi(coil, "rm_received_at"))
+		self.assertEqual(self._bi(coil, "rm_received_by"), "Administrator")
+		# The receipt records the location: the coil is at the line, so bin_code says
+		# so. (It used to stay at the warehouse bin; that left coils the SAP feed had
+		# never sent stuck on the "UNKNOWN" placeholder for ever. See
+		# TestRMReceiptSetsBin.)
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
+
+	def test_receive_idempotent(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rdup")
+		r2 = rm_api.rm_receive(LINE_A, coil, client_event_id="rdup")
+		self.assertTrue(r2.get("idempotent"))
+		self.assertEqual(frappe.db.count("Coil Transaction", {"txn_key": "rdup"}), 1)
+
+	def test_re_receive_writes_no_second_ledger_row(self):
+		"""Two receivers can both be staring at the same expected list."""
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		r = rm_api.rm_receive(LINE_A, coil, client_event_id="rc2")
+		self.assertTrue(r.get("already_received"))
+		self.assertEqual(frappe.db.count("Coil Transaction", {
+			"coil_barcode": coil, "transaction_type": rm_api.TXN_RECEIPT}), 1)
+
+	# ---- the strict-receipt rule: live scans -------------------------------
+	def test_receive_never_dispatched_is_refused(self):
+		"""A coil nobody sent here cannot be received here."""
+		coil = self._coil()
+		self._seed(coil)
+		with self.assertRaises(frappe.ValidationError) as cm:
+			rm_api.rm_receive(LINE_A, coil, client_event_id="np1")
+		self.assertIn("not sent to this line", str(cm.exception))
+		# and nothing at all happened
+		self.assertFalse(self._bi(coil, "rm_status"))
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+		self.assertEqual(frappe.db.count("Coil Transaction", {"coil_barcode": coil}), 0)
+
+	def test_receive_misrouted_is_refused_and_names_the_right_line(self):
+		"""The refusal has to say where the coil actually went, or nobody can act."""
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		with self.assertRaises(frappe.ValidationError) as cm:
+			rm_api.rm_receive(LINE_B, coil, client_event_id="mr1")
+		self.assertIn(LINE_A, str(cm.exception))
+		# still in transit to A, untouched
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.IN_TRANSIT)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_A)
+		self.assertEqual(frappe.db.count(
+			"Coil Transaction", {"coil_barcode": coil, "transaction_type": rm_api.TXN_RECEIPT}), 0)
+
+	def test_receive_already_taken_elsewhere_is_refused(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		with self.assertRaises(frappe.ValidationError) as cm:
+			rm_api.rm_receive(LINE_B, coil, client_event_id="rc2")
+		self.assertIn(LINE_A, str(cm.exception))
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_A)
+
+	def test_refusal_is_terminal_for_the_offline_queue(self):
+		"""A refused receipt must never sit in the queue retrying forever."""
+		coil = self._coil()
+		self._seed(coil)
+		with self.assertRaises(frappe.ValidationError) as cm:
+			rm_api.rm_receive(LINE_A, coil, client_event_id="np1")
+		self.assertTrue(api._terminal_failure(cm.exception))
+
+	# ---- ...and the one exception: replays ---------------------------------
+	def test_replayed_receipt_never_dispatched_is_flagged_not_refused(self):
+		"""The device captured this while its list said the coil belonged here.
+
+		Refusing at replay time would destroy a receipt that really happened — the
+		coil is physically at the line — and give the operator no way to re-enter it.
+		"""
+		coil = self._coil()
+		self._seed(coil)
+		r = rm_api.rm_receive(LINE_A, coil, client_event_id="np1", synced_offline=1)
+		self.assertEqual(r.get("unplanned"), 1)
+		self.assertEqual(r.get("reason"), "not_dispatched")
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
+		self.assertEqual(self._bi(coil, "rm_unplanned"), 1)
+
+	def test_replayed_misrouted_receipt_is_flagged_not_refused(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		r = rm_api.rm_receive(LINE_B, coil, client_event_id="mr1", synced_offline=1)
+		self.assertEqual(r.get("unplanned"), 1)
+		self.assertEqual(r.get("reason"), "misrouted")
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_B)
+		self.assertEqual(self._bi(coil, "rm_expected_destination"), LINE_A)
+
+	def test_queued_receipt_survives_a_late_gate_sync(self):
+		"""The race the whole exemption exists for, end to end.
+
+		Line receives offline; the gate's dispatch is still queued on another device
+		and lands afterwards. The receipt must survive, flagged.
+		"""
+		coil = self._coil()
+		self._seed(coil)
+		res = api.submit_offline_queue(json.dumps([
+			{"type": "rm_receive", "destination": LINE_A, "raw_qr": coil,
+			 "client_event_id": "q_rc1", "occurred_at": str(now_datetime())},
+		]))
+		self.assertTrue(res[0]["ok"], res[0])
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
+		self.assertEqual(self._bi(coil, "rm_unplanned"), 1)
+
+	# ---- clearing a flag ---------------------------------------------------
+	def test_clear_flag_drops_flag_and_records_who(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_receive(LINE_A, coil, client_event_id="np1", synced_offline=1)
+		self.assertEqual(self._bi(coil, "rm_unplanned"), 1)
+		r = rm_api.clear_unplanned_flag(coil, note="checked on the floor")
+		self.assertTrue(r["ok"])
+		self.assertEqual(self._bi(coil, "rm_unplanned"), 0)
+		# the coil does NOT move — clearing means "seen", not "undone"
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_A)
+		self.assertEqual(frappe.db.count("Coil Transaction", {
+			"coil_barcode": coil, "transaction_type": rm_api.TXN_FLAG_CLEARED}), 1)
+
+	def test_clear_flag_is_idempotent(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_receive(LINE_A, coil, client_event_id="np1", synced_offline=1)
+		rm_api.clear_unplanned_flag(coil)
+		r = rm_api.clear_unplanned_flag(coil)
+		self.assertTrue(r.get("already_clear"))
+		self.assertEqual(frappe.db.count("Coil Transaction", {
+			"coil_barcode": coil, "transaction_type": rm_api.TXN_FLAG_CLEARED}), 1)
+
+	def test_flag_cleared_rows_are_invisible_to_the_derive_sweep(self):
+		"""A new RM txn type must be excluded like the others, or it blanks bin_code.
+
+		The count scan gives the coil a real location row for the sweep to find —
+		without one it would legitimately be dropped as "never had a location", and
+		the test would pass for the wrong reason.
+		"""
+		coil = self._coil()
+		self._seed(coil)
+		count_api.count_scan(YARD, coil, client_event_id="cs1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="np1", synced_offline=1)
+		rm_api.clear_unplanned_flag(coil)
+		count_api._rederive_coil(coil)
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+
+	def test_open_line_expected_and_recent(self):
+		c1, c2 = self._coil(1), self._coil(2)
+		self._seed(c1)
+		self._seed(c2)
+		rm_api.rm_dispatch(LINE_A, c1, client_event_id="d1")
+		rm_api.rm_dispatch(LINE_A, c2, client_event_id="d2")
+		rm_api.rm_receive(LINE_A, c2, client_event_id="rc2")
+		out = rm_api.rm_open_line(LINE_A)
+		self.assertEqual(out["destination"], LINE_A)
+		self.assertEqual([c["coil_barcode"] for c in out["expected"]], [c1])
+		self.assertEqual([c["coil_barcode"] for c in out["received_recent"]], [c2])
+
+	def test_open_line_excludes_other_lines(self):
+		c1, c2 = self._coil(1), self._coil(2)
+		self._seed(c1)
+		self._seed(c2)
+		rm_api.rm_dispatch(LINE_A, c1, client_event_id="d1")
+		rm_api.rm_dispatch(LINE_B, c2, client_event_id="d2")
+		self.assertEqual([c["coil_barcode"] for c in rm_api.rm_open_line(LINE_A)["expected"]], [c1])
+		self.assertEqual([c["coil_barcode"] for c in rm_api.rm_open_line(LINE_B)["expected"]], [c2])
+
+	def test_received_history_window_is_honoured(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		# age the receipt past the window
+		frappe.db.set_value("Bin Inventory", coil, "rm_received_at",
+							add_to_date(now_datetime(), hours=-48), update_modified=False)
+		frappe.db.commit()
+		self.assertEqual(rm_api.rm_open_line(LINE_A)["received_recent"], [])
+
+	# ======================================================================
+	# the offline-ordering guards — the reason this is a state machine
+	# ======================================================================
+	def test_replayed_dispatch_does_not_resurrect_a_received_coil(self):
+		"""Gate offline, line online: the receipt happened first in real life."""
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		# the gate's scan happened BEFORE the receipt, but reaches us after it
+		earlier = add_to_date(now_datetime(), minutes=-30)
+		r = rm_api.rm_dispatch(LINE_A, coil, client_event_id="late1",
+							   occurred_at=earlier, synced_offline=1)
+		self.assertTrue(r.get("superseded"))
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
+		# and it is gone from the line's work list, not resurrected onto it
+		self.assertNotIn(coil, [c["coil_barcode"] for c in rm_api.rm_open_line(LINE_A)["expected"]])
+		# the audit trail still records that the gate scanned it
+		self.assertTrue(frappe.db.exists("Coil Transaction", {"txn_key": "late1"}))
+
+	def test_replayed_dispatch_to_another_line_also_cannot_regress(self):
+		"""The guard is NOT destination-scoped, which is the whole point.
+
+		Gate sent it to LINE_A, it physically turned up at LINE_B and was received
+		there. A destination-scoped rule would happily mark a coil that is sitting
+		at LINE_B as 'In Transit to LINE_A' — worse than the bug it guards.
+		"""
+		coil = self._coil()
+		self._seed(coil)
+		# Arrives somewhere it was never sent — under the strict rule that is only
+		# reachable as a replayed scan, which is what this scenario is.
+		rm_api.rm_receive(LINE_B, coil, client_event_id="rc1", synced_offline=1)
+		earlier = add_to_date(now_datetime(), minutes=-30)
+		r = rm_api.rm_dispatch(LINE_A, coil, client_event_id="late1",
+							   occurred_at=earlier, synced_offline=1)
+		self.assertTrue(r.get("superseded"))
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_B)
+		# the intended destination is recorded so the mismatch is visible
+		self.assertEqual(self._bi(coil, "rm_expected_destination"), LINE_A)
+
+	def test_live_dispatch_of_received_coil_starts_a_new_cycle(self):
+		"""The guard must not block a coil's legitimate second trip."""
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		r = rm_api.rm_dispatch(LINE_B, coil, client_event_id="d2")  # live, not replayed
+		self.assertFalse(r.get("superseded"))
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.IN_TRANSIT)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_B)
+		self.assertEqual(self._bi(coil, "rm_cycle"), 2)
+		# the previous trip's receipt data is cleared, not left to mislead
+		self.assertFalse(self._bi(coil, "rm_received_at"))
+		self.assertEqual(self._bi(coil, "rm_unplanned"), 0)
+		self.assertFalse(self._bi(coil, "rm_expected_destination"))
+
+	def test_replayed_dispatch_newer_than_receipt_still_applies(self):
+		"""An offline scan that genuinely happened after the receipt is a new trip."""
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		later = add_to_date(now_datetime(), minutes=30)
+		r = rm_api.rm_dispatch(LINE_B, coil, client_event_id="d2",
+							   occurred_at=later, synced_offline=1)
+		self.assertFalse(r.get("superseded"))
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.IN_TRANSIT)
+		self.assertEqual(self._bi(coil, "rm_cycle"), 2)
+
+	def test_replayed_receipt_after_redispatch_flags_conflict(self):
+		"""Line offline; meanwhile the gate re-dispatched the coil elsewhere."""
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		# Gate re-routes it, live. That is a deliberate act now, so it is confirmed.
+		rm_api.rm_dispatch(LINE_B, coil, client_event_id="d2", confirm_reroute=1)
+		earlier = add_to_date(now_datetime(), minutes=-30)
+		r = rm_api.rm_receive(LINE_A, coil, client_event_id="rc1",
+							  occurred_at=earlier, synced_offline=1)
+		# a human scanned it at LINE_A — strongest available evidence — but flagged
+		self.assertEqual(r.get("conflict"), 1)
+		self.assertEqual(r.get("reason"), "redispatched")
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_A)
+		self.assertEqual(self._bi(coil, "rm_expected_destination"), LINE_B)
+
+	# ======================================================================
+	# undo / reversal
+	# ======================================================================
+	def test_undo_dispatch_clears_state_and_keeps_bin(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_remove(coil, "dispatch", client_event_id="d1")
+		self.assertFalse(self._bi(coil, "rm_status"))
+		self.assertFalse(self._bi(coil, "rm_destination"))
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+		# marked reversed, NOT deleted — the txn_key must stay claimed
+		self.assertEqual(frappe.db.get_value("Coil Transaction", {"txn_key": "d1"}, "reversed"), 1)
+		self.assertEqual(frappe.db.count("Coil Transaction", {"txn_key": "d1"}), 1)
+
+	def test_undo_dispatch_writes_a_reversal_row(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_remove(coil, "dispatch", client_event_id="d1")
+		self.assertEqual(frappe.db.count("Coil Transaction", {
+			"coil_barcode": coil, "transaction_type": rm_api.TXN_DISPATCH_REVERSAL}), 1)
+
+	def test_undo_receipt_returns_to_in_transit(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		rm_api.rm_remove(coil, "receive", client_event_id="rc1")
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.IN_TRANSIT)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_A)
+		self.assertFalse(self._bi(coil, "rm_received_at"))
+		# back on the line's work list
+		self.assertIn(coil, [c["coil_barcode"] for c in rm_api.rm_open_line(LINE_A)["expected"]])
+
+	def test_undo_dispatch_refused_once_received(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		with self.assertRaises(frappe.ValidationError) as cm:
+			rm_api.rm_remove(coil, "dispatch", client_event_id="d1")
+		# must be classified terminal, or the handheld retries it forever
+		self.assertTrue(api._terminal_failure(cm.exception))
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
+
+	def test_undo_receipt_does_not_resurrect_a_reversed_dispatch(self):
+		"""Undo the dispatch, then undo the receipt: In Transit must NOT come back.
+
+		Restoring the receipt's snapshot verbatim would leave the coil in transit
+		with no live dispatch behind it — stuck on the expected list forever with
+		nothing to explain it.
+		"""
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		# reverse the dispatch row directly (the receipt blocks rm_remove for it)
+		frappe.db.set_value("Coil Transaction", {"txn_key": "d1"}, "reversed", 1,
+							update_modified=False)
+		frappe.db.commit()
+		rm_api.rm_remove(coil, "receive", client_event_id="rc1")
+		self.assertFalse(self._bi(coil, "rm_status"))
+		self.assertNotIn(coil, [c["coil_barcode"] for c in rm_api.rm_open_line(LINE_A)["expected"]])
+
+	def test_undo_dispatch_of_unknown_coil_drops_placeholder(self):
+		coil = self._coil()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		self.assertTrue(frappe.db.exists("Bin Inventory", coil))
+		rm_api.rm_remove(coil, "dispatch", client_event_id="d1")
+		self.assertFalse(frappe.db.exists("Bin Inventory", coil))
+
+	def test_undo_does_not_drop_a_feed_row(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_remove(coil, "dispatch", client_event_id="d1")
+		self.assertTrue(frappe.db.exists("Bin Inventory", coil))
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+
+	# ======================================================================
+	# ledger reconciliation — Bin Inventory is an index, not the record
+	# ======================================================================
+	def test_expected_list_survives_bin_inventory_deletion(self):
+		"""The SAP feed can hard-delete a Bin Inventory row mid-transit."""
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		frappe.delete_doc("Bin Inventory", coil, force=1, ignore_permissions=True)
+		frappe.db.commit()
+		out = rm_api.rm_open_line(LINE_A)
+		rows = [c for c in out["expected"] if c["coil_barcode"] == coil]
+		self.assertEqual(len(rows), 1, "in-transit coil vanished from the expected list")
+		self.assertEqual(rows[0]["recovered"], 1)
+		self.assertEqual(out["recovered_count"], 1)
+
+	def test_feed_refuses_to_remove_an_in_transit_coil(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		# Reuse the site's configured key rather than overwriting it — this suite
+		# runs against prod, and clobbering sap_api_key would break the live feed.
+		key = frappe.get_doc("WMSLite Settings").get_password("sap_api_key",
+															 raise_exception=False)
+		if not key:
+			self.skipTest("sap_api_key not configured on this site")
+		body = json.dumps({"action": "remove", "rows": [{"coil_barcode": coil}]})
+		saved = getattr(frappe.local, "request", None)
+		frappe.local.request = frappe._dict(
+			get_data=lambda as_text=True: body,
+			headers={"X-WMSLite-Key": key},
+		)
+		try:
+			out = bin_api.receive_bin_inventory()
+		finally:
+			frappe.local.request = saved
+		self.assertEqual(out.get("removed"), 0)
+		self.assertTrue(any("in transit" in e for e in out.get("errors", [])),
+						f"guard did not fire: {out}")
+		self.assertTrue(frappe.db.exists("Bin Inventory", coil))
+
+	def test_reconciliation_ignores_already_received(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="rc1")
+		out = rm_api.rm_open_line(LINE_A)
+		self.assertEqual([c["coil_barcode"] for c in out["expected"]], [])
+
+	# ======================================================================
+	# cross-flow isolation from Inventory Count
+	# ======================================================================
+	def test_count_undo_does_not_touch_rm_ledger(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		count_api.count_scan(LINE_A, coil, client_event_id="ct1")
+		count_api.count_remove(LINE_A, coil, client_event_id="ct1")
+		# the RM row is untouched by a count undo
+		self.assertTrue(frappe.db.exists("Coil Transaction", {"txn_key": "d1"}))
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.IN_TRANSIT)
+
+	def test_count_rederive_never_blanks_bin_code_via_rm_row(self):
+		"""An RM row carries no bin_code; _rederive_coil writes bin_code outright."""
+		coil = self._coil()
+		self._seed(coil)
+		count_api.count_scan(YARD, coil, client_event_id="ct1")
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")  # newest row, blank bin
+		count_api.count_remove(YARD, coil, client_event_id="ct1")
+		self.assertTrue(self._bi(coil, "bin_code"), "bin_code was blanked by an RM row")
+
+	def test_rm_rows_are_invisible_to_the_derive_sweep(self):
+		coil = self._coil()
+		self._seed(coil)
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		bin_api.process_pending_transactions()
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+		self.assertEqual(self._bi(coil, "source"), "Push API")
+
+	# ======================================================================
+	# guards
+	# ======================================================================
+	def test_my_tasks_reflects_rm_flag_and_roles(self):
+		out = count_api.my_tasks()  # Administrator = System Manager -> everything
+		self.assertIn("rm_dispatch", out["tasks"])
+		self.assertIn("rm_receive", out["tasks"])
+		frappe.db.set_single_value("WMSLite Settings", "rm_enabled", 0)
+		try:
+			tasks = count_api.my_tasks()["tasks"]
+			self.assertNotIn("rm_dispatch", tasks)
+			self.assertNotIn("rm_receive", tasks)
+		finally:
+			frappe.db.set_single_value("WMSLite Settings", "rm_enabled", 1)
+
+	def test_role_enforced_on_every_endpoint(self):
+		coil = self._coil()
+		frappe.set_user("Guest")
+		try:
+			for fn, args in (
+				(rm_api.rm_open_destination, (LINE_A,)),
+				(rm_api.rm_dispatch, (LINE_A, coil)),
+				(rm_api.rm_open_line, (LINE_A,)),
+				(rm_api.rm_receive, (LINE_A, coil)),
+				(rm_api.rm_remove, (coil, "dispatch")),
+				(rm_api.rm_finish, (LINE_A,)),
+			):
+				with self.assertRaises(frappe.PermissionError):
+					fn(*args)
+		finally:
+			frappe.set_user("Administrator")
+
+	def test_disabled_flag_blocks_and_is_terminal(self):
+		frappe.db.set_single_value("WMSLite Settings", "rm_enabled", 0)
+		try:
+			with self.assertRaises(frappe.ValidationError) as cm:
+				rm_api.rm_dispatch(LINE_A, self._coil(), client_event_id="off1")
+			self.assertTrue(api._terminal_failure(cm.exception))
+		finally:
+			frappe.db.set_single_value("WMSLite Settings", "rm_enabled", 1)
+
+	def test_undecodable_coil_is_terminal(self):
+		"""A garbage scan never becomes readable — it must not retry forever."""
+		with self.assertRaises(frappe.ValidationError) as cm:
+			rm_api.rm_dispatch(LINE_A, "   ", client_event_id="bad1")
+		self.assertTrue(api._terminal_failure(cm.exception))
+
+	def test_missing_destination_is_terminal(self):
+		with self.assertRaises(frappe.ValidationError) as cm:
+			rm_api.rm_dispatch("", self._coil(), client_event_id="bad2")
+		self.assertTrue(api._terminal_failure(cm.exception))
+
+	def test_timestamps_come_from_the_server(self):
+		coil = self._coil()
+		self._seed(coil)
+		bogus = "2001-01-01 00:00:00"
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1", occurred_at=bogus)
+		scanned = frappe.db.get_value("Coil Transaction", {"txn_key": "d1"}, "scanned_at")
+		self.assertGreater(str(scanned), "2020", "device clock leaked into the ledger")
+		self.assertGreater(str(self._bi(coil, "rm_dispatched_at")), "2020")
+
+	# ======================================================================
+	# offline replay through the queue
+	# ======================================================================
+	def test_offline_queue_replays_both_legs(self):
+		coil = self._coil()
+		self._seed(coil)
+		occurred = str(add_to_date(now_datetime(), minutes=-10))
+		events = [
+			{"type": "rm_dispatch", "destination": LINE_A, "raw_qr": coil,
+			 "coil_barcode": coil, "occurred_at": occurred, "client_event_id": "q1"},
+			{"type": "rm_receive", "destination": LINE_A, "raw_qr": coil,
+			 "coil_barcode": coil, "occurred_at": occurred, "client_event_id": "q2"},
+			# a duplicate replay of the first must not double-insert
+			{"type": "rm_dispatch", "destination": LINE_A, "raw_qr": coil,
+			 "coil_barcode": coil, "occurred_at": occurred, "client_event_id": "q1"},
+		]
+		results = api.submit_offline_queue(json.dumps(events))
+		self.assertTrue(all(r.get("ok") is not False for r in results),
+						f"queue replay failed: {results}")
+		self.assertEqual(frappe.db.count("Coil Transaction", {"txn_key": "q1"}), 1)
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.RECEIVED)
+
+	def test_offline_queue_unknown_rm_event_would_be_dropped(self):
+		"""Documents why the dispatch table matters: unknown types are terminal."""
+		results = api.submit_offline_queue(json.dumps([{"type": "rm_bogus",
+													   "client_event_id": "z1"}]))
+		self.assertFalse(results[0]["ok"])
+		self.assertTrue(results[0]["terminal"])
+
+	def test_offline_queue_failure_leaves_no_orphan_row(self):
+		"""A throw mid-batch must not leave a processed=0 row for the sweep."""
+		coil = self._coil()
+		self._seed(coil)
+		before = frappe.db.count("Coil Transaction", {"processed": 0})
+		events = [
+			{"type": "rm_dispatch", "destination": "", "raw_qr": coil,
+			 "client_event_id": "f1"},                      # throws: no destination
+			{"type": "rm_dispatch", "destination": LINE_A, "raw_qr": coil,
+			 "client_event_id": "f2"},                      # succeeds, commits
+		]
+		results = api.submit_offline_queue(json.dumps(events))
+		self.assertFalse(results[0]["ok"])
+		self.assertTrue(results[0]["terminal"])
+		self.assertTrue(results[1].get("ok"))
+		self.assertEqual(frappe.db.count("Coil Transaction", {"processed": 0}), before)
+
+	# ======================================================================
+	# finish
+	# ======================================================================
+	def test_finish_reports_counts(self):
+		c1, c2 = self._coil(1), self._coil(2)
+		self._seed(c1)
+		self._seed(c2)
+		rm_api.rm_dispatch(LINE_A, c1, client_event_id="d1")
+		rm_api.rm_dispatch(LINE_A, c2, client_event_id="d2")
+		rm_api.rm_receive(LINE_A, c2, client_event_id="rc2")
+		out = rm_api.rm_finish(LINE_A, "dispatch")
+		self.assertEqual(out["in_transit"], 1)
+		self.assertEqual(out["received"], 1)
+
+
+class TestRMCoilIdentity(FrappeTestCase):
+	"""The scanned QR and the stored coil must resolve to the same thing.
+
+	This is the bug that blocked the line: the handheld resolved a scan to its
+	batch code while the server stored the whole descriptive string, so the
+	expected list could never match the operator's own scan.
+	"""
+
+	# The plant's format, with a __TEST__ batch code so nothing here can ever touch
+	# a real coil. An earlier version of this class used a genuine barcode and its
+	# teardown -- LIKE '%<barcode>%' -- deleted the live row it matched. These suites
+	# run against the production database; every fixture must be namespaced.
+	QR = "__TEST__Plant - H.R.COIL-__TEST__RMID1 - 2.500 mm  X 1230 - 26.420 MT- H025001230C2"
+	BATCH = "__TEST__RMID1"
+
+	settings = SettingsGuard("rm_enabled", "count_enabled", "qr_decode_rule",
+							 "bin_decode_rule", "bin_validation_enabled", "rm_unknown_bin")
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		cls.settings.apply(rm_enabled=1, count_enabled=1, qr_decode_rule="Inventory Barcode",
+						   bin_decode_rule="Identity", bin_validation_enabled=0,
+						   rm_unknown_bin="__TEST__RM_UNKNOWN")
+		cls._wipe()
+
+	@classmethod
+	def tearDownClass(cls):
+		cls._wipe()
+		cls.settings.restore()
+		super().tearDownClass()
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		self._wipe()
+
+	@classmethod
+	def _wipe(cls):
+		# Prefix-anchored, never a leading wildcard: a leading % would match any coil
+		# whose barcode merely CONTAINS the fixture code.
+		for dt in ("Coil Transaction", "Bin Inventory"):
+			for n in frappe.get_all(dt, filters={"coil_barcode": ["like", f"{PREFIX}%"]},
+									pluck="name"):
+				frappe.delete_doc(dt, n, force=1, ignore_permissions=True)
+		frappe.db.commit()
+
+	def _bi(self, coil, field):
+		return frappe.db.get_value("Bin Inventory", coil, field)
+
+	def test_scanning_the_full_qr_resolves_to_the_batch_code(self):
+		bin_api.upsert_bin(self.BATCH, {"bin_code": YARD, "weight": 4200}, source="Push API")
+		frappe.db.commit()
+
+		r = rm_api.rm_dispatch(LINE_A, self.QR, client_event_id="id1")
+
+		self.assertEqual(r["coil_id"], self.BATCH)
+		# The coil that moved is the REAL one, not a new row keyed by the QR string.
+		self.assertEqual(self._bi(self.BATCH, "rm_status"), rm_api.IN_TRANSIT)
+		self.assertFalse(frappe.db.exists("Bin Inventory", self.QR))
+		# ...and it kept its warehouse bin, as RM always must.
+		self.assertEqual(self._bi(self.BATCH, "bin_code"), YARD)
+
+	def test_the_full_scan_is_kept_for_reconciliation(self):
+		bin_api.upsert_bin(self.BATCH, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, self.QR, client_event_id="id1")
+
+		self.assertEqual(self._bi(self.BATCH, "coil_qr_raw"), self.QR)
+		txn = frappe.get_all("Coil Transaction",
+							 filters={"coil_barcode": self.BATCH,
+									  "transaction_type": rm_api.TXN_DISPATCH},
+							 fields=["coil_qr_raw"], limit_page_length=1)[0]
+		self.assertEqual(txn.coil_qr_raw, self.QR)
+
+	def test_the_line_receives_a_coil_dispatched_by_full_qr(self):
+		"""End to end: the exact scenario that was refused on the floor."""
+		bin_api.upsert_bin(self.BATCH, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, self.QR, client_event_id="d1")
+
+		expected = rm_api.rm_open_line(LINE_A)["expected"]
+		self.assertEqual([c["coil_barcode"] for c in expected], [self.BATCH])
+
+		r = rm_api.rm_receive(LINE_A, self.QR, client_event_id="r1")
+		self.assertNotIn("unplanned", r)
+		self.assertEqual(self._bi(self.BATCH, "rm_status"), rm_api.RECEIVED)
+
+	def test_typing_the_batch_code_by_hand_also_works(self):
+		"""The operator's fallback when a QR will not scan."""
+		bin_api.upsert_bin(self.BATCH, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, self.QR, client_event_id="d1")
+
+		r = rm_api.rm_receive(LINE_A, self.BATCH, client_event_id="r1")
+		self.assertEqual(r["coil_id"], self.BATCH)
+		self.assertEqual(self._bi(self.BATCH, "rm_status"), rm_api.RECEIVED)
+
+
+class TestRMReroute(FrappeTestCase):
+	"""Re-routing takes a coil off a line that is waiting for it, so it is asked."""
+
+	settings = SettingsGuard("rm_enabled", "qr_decode_rule", "bin_decode_rule",
+							 "bin_validation_enabled", "rm_unknown_bin")
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		cls.settings.apply(rm_enabled=1, qr_decode_rule="Identity", bin_decode_rule="Identity",
+						   bin_validation_enabled=0, rm_unknown_bin="__TEST__RM_UNKNOWN")
+		_cleanup()
+
+	@classmethod
+	def tearDownClass(cls):
+		_cleanup()
+		cls.settings.restore()
+		super().tearDownClass()
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		_cleanup()
+
+	def _coil(self):
+		return f"{PREFIX}_RR_{self._testMethodName}"
+
+	def _bi(self, coil, field):
+		return frappe.db.get_value("Bin Inventory", coil, field)
+
+	def test_live_reroute_asks_first_and_writes_nothing(self):
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+
+		r = rm_api.rm_dispatch(LINE_B, coil, client_event_id="d2")
+
+		self.assertTrue(r["needs_confirm"])
+		self.assertEqual(r["current_destination"], LINE_A)
+		# Nothing moved, and no ledger row was written for the refused attempt.
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_A)
+		self.assertEqual(frappe.db.count("Coil Transaction", {
+			"coil_barcode": coil, "transaction_type": rm_api.TXN_DISPATCH}), 1)
+
+	def test_confirmed_reroute_moves_it(self):
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+
+		r = rm_api.rm_dispatch(LINE_B, coil, client_event_id="d2", confirm_reroute=1)
+
+		self.assertEqual(r["rerouted_from"], LINE_A)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_B)
+		# Same trip, not a new one.
+		self.assertEqual(self._bi(coil, "rm_cycle"), 1)
+		self.assertEqual([c["coil_barcode"] for c in rm_api.rm_open_line(LINE_A)["expected"]], [])
+
+	def test_replayed_reroute_is_not_asked(self):
+		"""An offline scan already happened — there is nobody left to confirm with."""
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+
+		r = rm_api.rm_dispatch(LINE_B, coil, client_event_id="d2", synced_offline=1)
+
+		self.assertNotIn("needs_confirm", r)
+		self.assertEqual(self._bi(coil, "rm_destination"), LINE_B)
+
+	def test_same_line_rescan_is_not_a_reroute(self):
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+
+		r = rm_api.rm_dispatch(LINE_A, coil, client_event_id="d2")
+
+		self.assertNotIn("needs_confirm", r)
+		self.assertEqual(r.get("already_in_transit"), 1)
+
+
+class TestRMReceiptSetsBin(FrappeTestCase):
+	"""A receipt records where the coil is, the way an Inventory Count scan does.
+
+	RM is a capture flow: the coils it handles do not all come from SAP. If the
+	receipt did not write the location, a coil the feed has never sent would sit in
+	the "UNKNOWN" placeholder for ever, because nothing else would ever fill it in.
+	"""
+
+	settings = SettingsGuard("rm_enabled", "qr_decode_rule", "bin_decode_rule",
+							 "bin_validation_enabled", "rm_unknown_bin")
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		cls.settings.apply(rm_enabled=1, qr_decode_rule="Identity", bin_decode_rule="Identity",
+						   bin_validation_enabled=0, rm_unknown_bin="__TEST__RM_UNKNOWN")
+		_cleanup()
+
+	@classmethod
+	def tearDownClass(cls):
+		_cleanup()
+		cls.settings.restore()
+		super().tearDownClass()
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		_cleanup()
+
+	def _coil(self):
+		return f"{PREFIX}_BIN_{self._testMethodName}"
+
+	def _bi(self, coil, field):
+		return frappe.db.get_value("Bin Inventory", coil, field)
+
+	def test_receipt_sets_the_bin_to_the_line(self):
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		# In transit the coil is on a forklift — the yard bin still stands.
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+
+		rm_api.rm_receive(LINE_A, coil, client_event_id="r1")
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
+
+	def test_a_coil_sap_never_sent_stops_being_unknown(self):
+		"""The case that prompted this: no feed row, so nothing else can fill it."""
+		coil = self._coil()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		# Dispatch had to invent the row, so it holds the placeholder.
+		self.assertEqual(self._bi(coil, "bin_code"), "__TEST__RM_UNKNOWN")
+
+		rm_api.rm_receive(LINE_A, coil, client_event_id="r1")
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
+
+	def test_a_future_dated_feed_row_cannot_swallow_the_receipt(self):
+		"""upsert_bin keeps the newest scan and drops older ones.
+
+		The feed fills scanned_at from naive ENTRYDATE/ENTRYTIME and rows dated in
+		the future exist on live sites. Routing the receipt through that guard would
+		make it a silent no-op for exactly the coils most likely to be moving, so the
+		receipt writes the row directly.
+		"""
+		coil = self._coil()
+		ahead = add_to_date(now_datetime(), hours=6)
+		bin_api.upsert_bin(coil, {"bin_code": YARD, "scanned_at": ahead}, source="Push API")
+		frappe.db.commit()
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="r1")
+
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
+
+	def test_a_later_genuine_feed_push_still_wins(self):
+		"""The feed remains the owner of warehouse location."""
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD, "scanned_at": now_datetime()},
+						   source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="r1")
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
+
+		later = add_to_date(now_datetime(), minutes=30)
+		bin_api.upsert_bin(coil, {"bin_code": "__TEST__RM_ELSEWHERE", "scanned_at": later},
+						   source="Push API")
+		frappe.db.commit()
+		self.assertEqual(self._bi(coil, "bin_code"), "__TEST__RM_ELSEWHERE")
+
+	def test_undoing_a_receipt_puts_the_bin_back(self):
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		rm_api.rm_receive(LINE_A, coil, client_event_id="r1")
+		self.assertEqual(self._bi(coil, "bin_code"), LINE_A)
+
+		rm_api.rm_remove(coil, "receive", client_event_id="r1")
+
+		self.assertEqual(self._bi(coil, "bin_code"), YARD)
+		self.assertEqual(self._bi(coil, "rm_status"), rm_api.IN_TRANSIT)
+
+	def test_dispatch_undo_does_not_touch_the_bin(self):
+		"""A dispatch never wrote bin_code, so its undo must not replay a stale one."""
+		coil = self._coil()
+		bin_api.upsert_bin(coil, {"bin_code": YARD}, source="Push API")
+		frappe.db.commit()
+		rm_api.rm_dispatch(LINE_A, coil, client_event_id="d1")
+		# The feed moves the coil while it is in transit.
+		frappe.db.set_value("Bin Inventory", coil, "bin_code", "__TEST__RM_MOVED",
+							update_modified=False)
+		frappe.db.commit()
+
+		rm_api.rm_remove(coil, "dispatch", client_event_id="d1")
+
+		self.assertEqual(self._bi(coil, "bin_code"), "__TEST__RM_MOVED")

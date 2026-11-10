@@ -12,7 +12,20 @@ import frappe
 from frappe.utils import get_datetime, now_datetime
 
 BIN_FIELDS = ("bin_code", "material_grade", "weight", "zone", "aisle",
-			  "plant", "product", "sized")
+			  "plant", "product", "sized", "coil_qr_raw")
+
+# Coil Transaction types that are NOT statements about where a coil physically is.
+# RM Movement rows deliberately carry no bin_code (a coil in transit keeps its
+# warehouse bin, because the loading flow reads that), so anything deriving a
+# location from the ledger must skip them or it will blank a mandatory field.
+# Note the SAP feed leaves transaction_type NULL, so exclusion must be NULL-safe:
+# `NULL NOT IN (...)` is NULL in SQL, which would silently drop every feed row.
+RM_TXN_TYPES = ("RM Dispatch", "RM Receipt",
+				"RM Dispatch Reversal", "RM Receipt Reversal", "RM Flag Cleared")
+
+# Defined here rather than imported from rm_api: rm_api imports this module, so
+# importing back would be circular.
+RM_IN_TRANSIT = "In Transit to Line"
 
 
 def _truthy(v):
@@ -138,6 +151,15 @@ def receive_bin_inventory():
 		try:
 			if action == "remove":
 				if frappe.db.exists("Bin Inventory", code):
+					# Refuse to delete a coil that is out on an RM movement. RM state
+					# lives on this row and there is no header document, so deleting
+					# it would drop the coil off the receiving line's expected list
+					# with nothing to explain where it went. (rm_open_line also
+					# reconciles against the ledger, but that is the safety net —
+					# this is the fix.)
+					if frappe.db.get_value("Bin Inventory", code, "rm_status") == RM_IN_TRANSIT:
+						errors.append(f"{code}: in transit to a line — not removed")
+						continue
 					frappe.delete_doc("Bin Inventory", code, force=1, ignore_permissions=True)
 					removed.append(code)
 			elif upsert_bin(code, r, source="Push API"):

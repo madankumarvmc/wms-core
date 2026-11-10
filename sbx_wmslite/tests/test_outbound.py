@@ -10,8 +10,18 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from sbx_wmslite import api, sap_api, outbound_sap, console_api
+from sbx_wmslite.tests.settings_guard import SettingsGuard
 
 TRUCK = "__TEST__OUT"
+
+
+# Every field these tests write is listed here so tearDownClass can put the
+# site's own values back — this Single is shared with the live site.
+SETTINGS = SettingsGuard(
+	"gi_enabled", "auto_complete_on_full_load", "sap_token_url", "sap_client_id",
+	"sap_client_secret", "sap_gi_url", "verify_tls", "gi_max_attempts",
+	"gi_auto_send_full", "gi_hold_short_for_review", "supervisor_pin",
+)
 
 
 class FakeResp:
@@ -45,22 +55,21 @@ class TestOutboundSAP(FrappeTestCase):
 	def setUp(self):
 		_cleanup()
 		self.tag = TRUCK + "_" + self._testMethodName
-		s = frappe.get_doc("WMSLite Settings")
-		s.gi_enabled = 1
-		# these tests complete a plan by loading its last coil, so auto-complete must
-		# be on (otherwise the plan parks at 'Ready to Complete' and no GI fires)
-		s.auto_complete_on_full_load = 1
-		s.sap_token_url = "https://sap.example/token"
-		s.sap_client_id = "cid"
-		s.sap_client_secret = "secret"
-		s.sap_gi_url = "https://sap.example/gi"
-		s.verify_tls = 0
-		s.gi_max_attempts = 2
-		s.gi_auto_send_full = 1
-		s.gi_hold_short_for_review = 1
-		s.supervisor_pin = "1111"
-		s.save(ignore_permissions=True)
-		frappe.db.commit()
+		SETTINGS.apply(
+			gi_enabled=1,
+			# these tests complete a plan by loading its last coil, so auto-complete
+			# must be on (otherwise the plan parks at 'Ready to Complete', no GI fires)
+			auto_complete_on_full_load=1,
+			sap_token_url="https://sap.example/token",
+			sap_client_id="cid",
+			sap_client_secret="secret",
+			sap_gi_url="https://sap.example/gi",
+			verify_tls=0,
+			gi_max_attempts=2,
+			gi_auto_send_full=1,
+			gi_hold_short_for_review=1,
+			supervisor_pin="1111",
+		)
 
 		# mock token + http + enqueue
 		self._orig = (outbound_sap._get_token, outbound_sap._http_post, frappe.enqueue)
@@ -74,6 +83,11 @@ class TestOutboundSAP(FrappeTestCase):
 		frappe.db.set_single_value("WMSLite Settings", "gi_enabled", 0)
 		frappe.db.commit()
 		_cleanup()
+
+	@classmethod
+	def tearDownClass(cls):
+		SETTINGS.restore()
+		super().tearDownClass()
 
 	def _plan(self, coils):
 		return sap_api._upsert(None, self.tag, self.tag, coils, {"sap_plan_id": self.tag})["plan"]

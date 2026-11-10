@@ -41,6 +41,12 @@ scheduler_events = {
 			"sbx_wmslite.bin_api.process_pending_transactions",
 			# Push any Pending loaded coils to SAP (immediate enqueue on load too).
 			"sbx_wmslite.loading_push.sweep",
+			# Push any Pending in-app Inventory Count scans to SAP (T1, LOCATION = bin);
+			# also recovers rows a dead worker left in 'Sending'.
+			"sbx_wmslite.count_push.sweep",
+			# Push any Pending RM line receipts to SAP (T2, LOCATION = line);
+			# same recovery of 'Sending' rows.
+			"sbx_wmslite.rm_push.sweep",
 		],
 	}
 }
