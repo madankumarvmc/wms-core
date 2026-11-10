@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 0,
- "autoname": "IMP-.#####",
+ "autoname": "WIMP-.#####",
  "creation": "2026-06-22 00:00:00.000000",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -113,10 +113,10 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-06-22 00:00:00.000000",
+ "modified": "2026-11-04 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "SBX WMSLite",
- "name": "Import Batch",
+ "name": "WMSLite Import Batch",
  "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
@@ -140,6 +140,17 @@
    "read": 1,
    "report": 1,
    "role": "Loading Supervisor",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "WMS Manager",
    "share": 1,
    "write": 1
   }

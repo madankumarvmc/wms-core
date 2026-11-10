@@ -35,8 +35,8 @@ PREFIX = "__TEST__RM"
 # site's own values back — this Single is shared with the live site.
 SETTINGS = SettingsGuard(
 	"rm_enabled", "rm_received_history_hours", "rm_unknown_bin",
-	"count_enabled", "qr_decode_rule", "bin_decode_rule",
-	"bin_validation_enabled",
+	"count_enabled", "count_push_enabled", "rm_push_enabled", "qr_decode_rule",
+	"bin_decode_rule", "bin_validation_enabled",
 )
 
 
@@ -46,6 +46,12 @@ def _settings():
 		rm_received_history_hours=12,
 		rm_unknown_bin="__TEST__RM_UNKNOWN",
 		count_enabled=1,
+		# A few cases call count_scan; SAP is not mocked here, so keep the count
+		# push OFF or those __TEST__ coils would be POSTed to SAP for real.
+		count_push_enabled=0,
+		# Same for the T2 receipt push: rm_receive arms it, and a live switch would
+		# enqueue a real sweep against the configured SAP host.
+		rm_push_enabled=0,
 		qr_decode_rule="Identity",
 		bin_decode_rule="Identity",
 		# The existing cases scan bare coil codes straight into the endpoints; the

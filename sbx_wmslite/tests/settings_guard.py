@@ -74,6 +74,36 @@ def assert_safe_to_mutate_settings():
 			f"the floor is idle, or set {OVERRIDE_ENV}=1 if you know it is.")
 
 
+def assert_no_live_pending_pushes():
+	"""Refuse to run a suite that drives a mocked SAP sweep while REAL coils are
+	queued for SAP.
+
+	loading_push.sweep(), count_push.sweep() and rm_push.sweep() are site-wide: they push every
+	Pending row, not just __TEST__ ones. Under a mocked `_http_post` that echoes
+	"Data Pushed Successfully", a live Pending coil caught in the same batch is
+	marked Sent although SAP never heard of it -- and nothing downstream can tell.
+
+	That is not hypothetical. On 2026-08-31 a run marked 199 real coils on
+	LP-00074..LP-00084 Sent this way; on 2026-09-23 coil 121493 the same, minutes
+	after a supervisor had been watching it. Their WMSLite SAP Loading records
+	carry the tell-tale: a response_excerpt containing "__TEST__".
+
+	Deliberately NOT overridable by WMSLITE_ALLOW_LIVE_TESTS: that switch means
+	"the floor is idle", which does nothing to make a queued coil safe. Push (or
+	park) the live rows first, or run the suite on a site that is not production.
+	"""
+	loading = frappe.db.count("Loading Plan Coil", {
+		"sap_loading_status": "Pending", "coil_barcode": ("not like", "__TEST__%")})
+	count = frappe.db.count("Coil Transaction", {
+		"sap_status": "Pending", "source": "In-app", "coil_barcode": ("not like", "__TEST__%")})
+	if loading or count:
+		frappe.throw(
+			f"Refusing to run: {loading} live loading coil(s) and {count} live in-app scan(s) "
+			f"are Pending for SAP. This suite mocks the SAP endpoint and its sweep is "
+			f"site-wide, so those rows would be marked Sent without ever reaching SAP. "
+			f"Let them push (or set them Not Required) first; there is no override.")
+
+
 def _password_fields():
 	return {df.fieldname for df in frappe.get_meta(DOCTYPE).fields
 			if df.fieldtype == "Password"}

@@ -20,4 +20,10 @@ def after_install():
 	roles.run()
 	r = locations.seed_from_fixture()
 	print(f"  locations: {r['created']} seeded from the fixture")
+	# Site master for the console's global filters (patch v14 does the same on
+	# existing sites; patches never run on a fresh install).
+	from sbx_wmslite import classify
+
+	r = classify.seed_sites()
+	print(f"  sites: {r['created']} seeded")
 	frappe.db.commit()

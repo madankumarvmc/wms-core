@@ -1,7 +1,7 @@
 // SBX WMSLite — operator PWA service worker.
 // App-shell cache + offline navigation fallback. Data lives in IndexedDB
 // (managed by the page), so the SW only caches the shell + static assets.
-const CACHE = "wmslite-v6";   // v6: server-side batch-code identity, location validation
+const CACHE = "wmslite-v9";   // v9: Inventory lookup screen (coil + location, bin-or-coil search)
 const SHELL = [
 	"/wms-loading",
 	"/assets/sbx_wmslite/css/stackbox.css",

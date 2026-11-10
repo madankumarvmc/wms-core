@@ -50,8 +50,12 @@ CORPUS = [
 	"6ITP6806",
 	"120239",
 	"H025001230C2",
+	# --- the OEM fix (2026-10-02): coil OEM must NOT glue the size onto the batch ---
+	"5100 - PPGL Coil OEM-1R6I31513 - 1.000 mm  X 914 X 617 Mtr. - 4.330 MT- PGL1000070O/R",
+	"Jangalpur CR3 - PPGL Corrug Sh OEM-464-C - 0.550 mm  X 800 X 2438 mm - 2.774 MT- PGI0550120O/C",
 	# --- branch coverage ---
-	"PlantX - SOMETHINGOEM-BATCH1 - a - b - c",      # rule 1: seg2 ends OEM
+	"PlantX - SOMETHINGOEM-BATCH1 - a - b - c",      # rule 1: seg2 ends OEM, short seg4
+	"PlantX - SOMETHINGOEM-BATCH1 - long seg4 - b - c",  # rule 1 blocked: seg4 is not a suffix
 	"PlantX - Thing-P2ABC - seg4here - c - d",        # rule 2: extra code -> seg4
 	"PlantX - Thing-GL CODE - seg4here - c - d",      # rule 2, prefix with a space
 	"PlantX - Thing-PGI CODE - seg4here - c",         # rule 2, 4-char prefix
@@ -97,6 +101,28 @@ class TestDecodeParity(FrappeTestCase):
 			once = extract_inventory_batch(raw)
 			self.assertEqual(extract_inventory_batch(once), once,
 							 f"not idempotent for {raw!r}")
+
+	def test_expected_identities(self):
+		"""Pinned answers for the formats that have bitten us in production.
+
+		The OEM coil case: before 2026-10-02 the rule returned
+		"1R6I31513-1.000 mm  X 914 X 617 Mtr." — 8,052 sheet rows and 213 handheld
+		scans were stored under that identity, and SAP (BATCH is 10 chars) recorded
+		them as "1R6I31513-". The corrugated OEM case is what the seg3-seg4 join
+		exists for and must keep working. Spaces inside a segment collapse to one,
+		as AppSheet's TRIM does, so the handheld and the sheet feed agree.
+		"""
+		cases = {
+			"5100 - PPGL Coil OEM-1R6I31513 - 1.000 mm  X 914 X 617 Mtr. - 4.330 MT- PGL1000070O/R": "1R6I31513",
+			"Colour Coating Plant - PPGL Coil OEM-1R6C08506 - 0.500 mm  X 1100 X 1043 Mtr. - 3.935 MT- PGL0500150O/RW": "1R6C08506",
+			"Jangalpur CR3 - PPGL Corrug Sh OEM-464-C - 0.550 mm  X 800 X 2438 mm - 2.774 MT- PGI0550120O/C": "464-C",
+			"Colour Coating Plant - PPGL Coil-2R5K50229 - 0.400 mm  X 1220 X 1274 Mtr. - 4.096 MT- PGL0400070S/RGW": "2R5K50229",
+			"Jangalpur CR3 - H.R.COIL-JJG40788 - 2.500 mm  X 1230 - 26.420 MT- H025001230C2": "JJG40788",
+			"Jangalpur CR3 - Thing-ABCDEF - seg4  here": "ABCDEF-seg4 here",
+			"1R6I31513": "1R6I31513",
+		}
+		for raw, want in cases.items():
+			self.assertEqual(extract_inventory_batch(raw), want, raw)
 
 	def test_dead_rm_branch_is_preserved(self):
 		"""`RM` must not be treated as an extra code — the JS cannot match it.

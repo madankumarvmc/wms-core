@@ -16,6 +16,10 @@ Flow:
 
 Every attempt is written to WMSLite SAP Log (direction Outbound, action Loading).
 loading_push_enabled is OFF by default — nothing is sent to SAP until switched on.
+
+The transport (`post_rows` / `row_outcome`) is the shared zpwmsb round trip: the
+inventory-count push (count_push.py) sends the same T1 rows with LOCATION = bin
+through it, so the CSRF handshake, response matching and test seams live here once.
 """
 
 import base64
@@ -23,7 +27,7 @@ import json
 import re
 
 import frappe
-from frappe.utils import cint, get_datetime, now_datetime
+from frappe.utils import add_to_date, cint, get_datetime, now_datetime
 
 SUCCESS_MESSAGE = "Data Pushed Successfully"
 
@@ -188,13 +192,111 @@ def _key(row):
 
 
 # --------------------------------------------------------------------------
+# shared zpwmsb transport (loading push + inventory-count push)
+# --------------------------------------------------------------------------
+def post_rows(payload, s):
+	"""One SAP zpwmsb round trip: CSRF fetch + POST of `payload` (a list of T1
+	rows). Never raises. Returns a dict:
+
+	  kind         "transport_error" — exception before/at the POST (incl. CSRF);
+	               "server_error"    — HTTP >= 500 (SAP-side transient);
+	               "result"          — any other HTTP status, parse per row.
+	  ok           True iff 2xx.
+	  status_code  int, or None on transport_error.
+	  text         response body ("" when none).
+	  by_key       {_key(row): (MESSAGE.strip(), MSGTYPE.strip().upper())} parsed
+	               from SAP's response array. MSGTYPE is "S" (success) or "E"
+	               (error) when SAP supplies it, else "".
+	  message      one-line summary for the SAP Log.
+
+	The seams `_new_session` / `_csrf_token` / `_http_post` are looked up on this
+	module at call time so tests can patch them for either caller.
+	"""
+	timeout = cint(s.sap_gi_timeout) or 30
+	verify = bool(cint(s.verify_tls))
+	try:
+		session = _new_session()
+		token = _csrf_token(session, s)
+		resp = _http_post(
+			session, s.loading_push_url, json.dumps(payload),
+			{"Content-Type": "application/json", "Authorization": _basic_auth(s),
+			 "x-csrf-token": token}, timeout, verify)
+	except Exception as e:
+		return {"kind": "transport_error", "ok": False, "status_code": None, "text": "",
+				"by_key": {}, "message": f"Transport/CSRF: {e}"}
+
+	by_key = {}
+	try:
+		parsed = json.loads(resp.text or "")
+		if isinstance(parsed, list):
+			for item in parsed:
+				by_key[f"{item.get('BATCH')}_{item.get('ENTRYDATE')}_{item.get('ENTRYTIME')}"] = (
+					(item.get("MESSAGE") or "").strip(),
+					(item.get("MSGTYPE") or "").strip().upper())
+	except Exception:
+		pass
+
+	ok = 200 <= resp.status_code < 300
+	kind = "server_error" if resp.status_code >= 500 else "result"
+	return {"kind": kind, "ok": ok, "status_code": resp.status_code,
+			"text": resp.text or "", "by_key": by_key,
+			"message": f"HTTP {resp.status_code}: {(resp.text or '')[:300]}"}
+
+
+def row_outcome(row, res):
+	"""(status, message) for one pushed row from a post_rows() "result".
+
+	Sent iff 2xx and SAP accepted this BATCH+ENTRYDATE+ENTRYTIME: MSGTYPE "S"
+	when SAP supplies it (this also covers the idempotent re-send answer "Data
+	already Pushed to SAP" — a retry after a timed-out POST that SAP had in fact
+	recorded), else the literal SUCCESS_MESSAGE — or 2xx with no parseable
+	response list at all (every row is then taken as accepted, message "OK").
+	Anything else is Failed with SAP's message, or "HTTP nnn" when SAP said
+	nothing for the row.
+	"""
+	msg, msgtype = res["by_key"].get(_key(row), ("", ""))
+	accepted = msgtype == "S" if msgtype else msg == SUCCESS_MESSAGE
+	if res["ok"] and (accepted or (not res["by_key"] and msg == "")):
+		return "Sent", msg or "OK"
+	if not msg and res["by_key"]:
+		# SAP answered for other rows but said nothing about this one (see
+		# post_rows_resolving) — its fate is unknown, not rejected.
+		return "Failed", f"No reply row from SAP for this coil (HTTP {res['status_code']}) — retry"
+	return "Failed", msg or f"HTTP {res['status_code']}"
+
+
+def post_rows_resolving(payload, s):
+	"""post_rows(), then re-send one at a time every row a 2xx reply did not echo.
+
+	Observed live 2026-09-23: a batch that holds already-pushed rows comes back
+	with FEWER reply rows than were sent (a 2-row batch of duplicates answered
+	with one row), so the unechoed rows' outcome is unknown — SAP may well hold
+	them. A single-row re-send is safe (SAP de-dups on BATCH+ENTRYDATE+ENTRYTIME)
+	and always answers ("Data already Pushed to SAP", MSGTYPE S), which settles
+	each row definitively instead of marking it Failed. Replies are appended to
+	`text` so the record keeps the evidence.
+	"""
+	res = post_rows(payload, s)
+	if res["kind"] != "result" or not res["ok"] or not res["by_key"] or len(payload) < 2:
+		return res
+	for row in payload:
+		if _key(row) in res["by_key"]:
+			continue
+		single = post_rows([row], s)
+		if single["kind"] == "result" and single["by_key"]:
+			res["by_key"].update(single["by_key"])
+			res["text"] = f"{res['text']}\n{single['text']}"
+	return res
+
+
+# --------------------------------------------------------------------------
 # logging
 # --------------------------------------------------------------------------
-def _log(result, message, count=0, payload=None):
+def _log(result, message, count=0, payload=None, action="Loading"):
 	try:
 		frappe.get_doc({
 			"doctype": "WMSLite SAP Log", "received_at": now_datetime(),
-			"direction": "Outbound", "action": "Loading", "result": result,
+			"direction": "Outbound", "action": action, "result": result,
 			"coil_count": count, "message": (message or "")[:1000], "payload": payload,
 		}).insert(ignore_permissions=True)
 	except Exception:
@@ -264,61 +366,91 @@ def push_batch(chunk, plans, bins, s):
 		payload.append(row)
 		key_to_coil[_key(row)] = r.name
 
-	timeout = cint(s.sap_gi_timeout) or 30
-	verify = bool(cint(s.verify_tls))
-	try:
-		session = _new_session()
-		token = _csrf_token(session, s)
-		resp = _http_post(
-			session, s.loading_push_url, json.dumps(payload),
-			{"Content-Type": "application/json", "Authorization": _basic_auth(s),
-			 "x-csrf-token": token}, timeout, verify)
-	except Exception as e:
-		# Transport / CSRF failure: leave the whole batch Pending for the next sweep.
-		_log("Error", f"Transport/CSRF: {e}", count=len(payload), payload=json.dumps(payload))
-		frappe.db.commit()
-		return {"sent": 0, "failed": 0, "deferred": len(payload)}
-
-	ok = 200 <= resp.status_code < 300
-	by_key = {}
-	try:
-		parsed = json.loads(resp.text or "")
-		if isinstance(parsed, list):
-			for item in parsed:
-				by_key[f"{item.get('BATCH')}_{item.get('ENTRYDATE')}_{item.get('ENTRYTIME')}"] = \
-					(item.get("MESSAGE") or "").strip()
-	except Exception:
-		pass
-
-	if not ok and resp.status_code >= 500:
-		# Server-side transient: leave Pending, retry next sweep.
-		_log("Error", f"HTTP {resp.status_code}: {(resp.text or '')[:300]}",
-			 count=len(payload), payload=json.dumps(payload))
+	res = post_rows_resolving(payload, s)
+	if res["kind"] in ("transport_error", "server_error"):
+		# Transport / CSRF failure or SAP-side 5xx: hand the claimed batch back
+		# (Sending -> Pending) for the next sweep.
+		_release([r.name for r in chunk])
+		_log("Error", res["message"], count=len(payload), payload=json.dumps(payload))
 		frappe.db.commit()
 		return {"sent": 0, "failed": 0, "deferred": len(payload)}
 
 	now, sent, failed = now_datetime(), 0, 0
 	for row in payload:
 		coil_name = key_to_coil[_key(row)]
-		msg = by_key.get(_key(row), "")
-		if ok and (msg == SUCCESS_MESSAGE or (not by_key and msg == "")):
-			status, sent = "Sent", sent + 1
-			msg = msg or "OK"
+		status, msg = row_outcome(row, res)
+		if status == "Sent":
+			sent += 1
 		else:
-			status, failed = "Failed", failed + 1
-			msg = msg or f"HTTP {resp.status_code}"
+			failed += 1
 		frappe.db.set_value("Loading Plan Coil", coil_name, {
 			"sap_loading_status": status, "sap_loading_message": msg[:500],
 			"sap_loading_pushed_at": now}, update_modified=False)
 		_sync_loading_record(coil_meta.get(coil_name), plans.get(coil_meta[coil_name].parent),
 							  status, message=msg, request_payload=json.dumps(row, indent=2),
-							  response_excerpt=(resp.text or "")[:500], pushed_at=now, inc_attempt=True)
+							  response_excerpt=res["text"][:4000], pushed_at=now, inc_attempt=True)
 
-	_log("Accepted" if ok else "Rejected",
-		 f"pushed {len(payload)} (sent {sent}, failed {failed}), HTTP {resp.status_code}",
+	_log("Accepted" if res["ok"] else "Rejected",
+		 f"pushed {len(payload)} (sent {sent}, failed {failed}), HTTP {res['status_code']}",
 		 count=len(payload), payload=json.dumps(payload))
 	frappe.db.commit()
 	return {"sent": sent, "failed": failed, "deferred": 0}
+
+
+# A coil claimed ("Sending") this long ago with no answer was orphaned by a dead
+# worker: put it back to Pending. >= 2 cron ticks; also >= 2*timeout+60s.
+STUCK_SECONDS = 600
+
+_ROW_FIELDS = ["name", "parent", "coil_barcode", "weight", "material_grade", "loaded_at",
+			   "coil_qr_raw"]
+
+
+def _recover_stuck(s):
+	"""Coils a dead worker left in "Sending" go back to Pending."""
+	horizon = max(STUCK_SECONDS, 2 * (cint(s.sap_gi_timeout) or 30) + 60)
+	cutoff = add_to_date(now_datetime(), seconds=-horizon)
+	frappe.db.sql("""
+		UPDATE `tabLoading Plan Coil`
+		SET sap_loading_status = 'Pending'
+		WHERE sap_loading_status = 'Sending'
+		  AND (sap_loading_pushed_at IS NULL OR sap_loading_pushed_at < %(cutoff)s)""",
+		{"cutoff": cutoff})
+
+
+def _claim(limit):
+	"""Atomically move up to `limit` Pending loaded coils to "Sending"; return them.
+
+	Seen live 2026-09-23: a synchronous sweep and the worker's enqueued sweep ran
+	0.27 s apart and POSTed the same two coils twice (SAP de-duped, so no harm
+	done, but only by luck of SAP's key). The locking SELECT serialises
+	overlapping sweeps: the second blocks on the row locks, then its conditional
+	UPDATE matches nothing because the rows are already "Sending".
+	"""
+	names = [r[0] for r in frappe.db.sql("""
+		SELECT name FROM `tabLoading Plan Coil`
+		WHERE sap_loading_status = 'Pending' AND coil_status = 'Loaded'
+		ORDER BY loaded_at ASC, creation ASC
+		LIMIT %(limit)s
+		FOR UPDATE""", {"limit": cint(limit)})]
+	if not names:
+		frappe.db.commit()
+		return []
+	frappe.db.sql("""
+		UPDATE `tabLoading Plan Coil`
+		SET sap_loading_status = 'Sending', sap_loading_pushed_at = %(now)s
+		WHERE name IN %(names)s AND sap_loading_status = 'Pending'""",
+		{"now": now_datetime(), "names": tuple(names)})
+	frappe.db.commit()
+	return frappe.get_all("Loading Plan Coil",
+						  filters={"name": ["in", names], "sap_loading_status": "Sending"},
+						  fields=_ROW_FIELDS, order_by="loaded_at asc, creation asc")
+
+
+def _release(names):
+	"""Transport / 5xx: hand the claimed coils back to the next sweep."""
+	if names:
+		frappe.db.sql("""UPDATE `tabLoading Plan Coil` SET sap_loading_status = 'Pending'
+			WHERE name IN %(names)s AND sap_loading_status = 'Sending'""", {"names": tuple(names)})
 
 
 def sweep(limit=2000):
@@ -326,12 +458,8 @@ def sweep(limit=2000):
 	s = _settings()
 	if not cint(s.loading_push_enabled):
 		return {"skipped": "disabled"}
-	rows = frappe.get_all(
-		"Loading Plan Coil",
-		filters={"sap_loading_status": "Pending", "coil_status": "Loaded"},
-		fields=["name", "parent", "coil_barcode", "weight", "material_grade", "loaded_at",
-				"coil_qr_raw"],
-		order_by="loaded_at asc", limit_page_length=limit)
+	_recover_stuck(s)
+	rows = _claim(limit)
 	if not rows:
 		return {"pending": 0}
 

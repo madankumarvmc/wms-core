@@ -32,14 +32,18 @@ def _wipe():
 
 class TestLocationValidation(FrappeTestCase):
 	settings = SettingsGuard("rm_enabled", "count_enabled", "bin_decode_rule",
-							 "qr_decode_rule", "bin_validation_enabled")
+							 "qr_decode_rule", "bin_validation_enabled",
+							 "count_push_enabled", "rm_push_enabled")
 
 	@classmethod
 	def setUpClass(cls):
 		super().setUpClass()
 		frappe.set_user("Administrator")
+		# Both SAP pushes OFF: these cases call count_scan / rm_receive, which arm a
+		# push, and SAP is not mocked here.
 		cls.settings.apply(rm_enabled=1, count_enabled=1, bin_decode_rule="Identity",
-						   qr_decode_rule="Identity", bin_validation_enabled=1)
+						   qr_decode_rule="Identity", bin_validation_enabled=1,
+						   count_push_enabled=0, rm_push_enabled=0)
 		_wipe()
 		for code in (LINE, BIN):
 			doc = frappe.new_doc("WMSLite Bin")

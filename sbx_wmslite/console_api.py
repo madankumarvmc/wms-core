@@ -9,9 +9,10 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, get_datetime, getdate, now_datetime, today
+from frappe.utils import add_to_date, cint, get_datetime, getdate, now_datetime, today
 
-from sbx_wmslite import locations
+from sbx_wmslite import classify, locations
+from sbx_wmslite.decode import qr_size, qr_weight_mt
 
 SUPERVISOR = "Loading Supervisor"
 MANAGER = "WMS Manager"
@@ -37,37 +38,103 @@ def _date_range(date_from, date_to):
 
 
 # --------------------------------------------------------------------------
-# dashboard
+# global filters (Site / Material Type) + dashboard
 # --------------------------------------------------------------------------
+# Every list endpoint takes `site` / `material_type` (both default None = no
+# filter). The console sends them on every call; Frappe drops the kwarg on any
+# endpoint that does not declare it. How each table resolves them is in
+# classify.py: Bin Inventory / WMSLite Bin derive at query time from the bin
+# prefix, Coil Transaction reads its stored columns, Loading Plans go through
+# the SAP plant code. This map tells the console which views honour which.
+_VIEW_SUPPORT = {
+	"dashboard": ["site", "material_type"],
+	"inventory": ["site", "material_type"],
+	"transactions": ["site", "material_type"],
+	"rm": ["site", "material_type"],
+	"trucks": ["site"],
+	"binmaster": ["site"],
+	"confirmations": ["site"],
+	"saploading": ["site"],
+	"saplog": [],
+	"import": [],
+	"users": [],
+}
+
+# Dashboard section groups — the "Transaction Type" selector. Only the requested
+# groups are computed: the scans group is a multi-second aggregate over the whole
+# feed for "all time", and a supervisor looking at loading should not pay for it.
+DASH_GROUPS = ("loading", "inventory", "rm")
+RM_TXN_DISPATCH = "RM Dispatch"
+RM_TXN_RECEIPT = "RM Receipt"
+
+
 @frappe.whitelist()
-def get_dashboard(date_from=None, date_to=None):
-	"""Live-state tiles are always "now"; throughput tiles + overall stock are
-	scoped to [date_from .. date_to] (whole days). Range only touches throughput."""
+def get_filter_options():
+	"""What the console's global filter bar offers, and which views honour it."""
 	_require_console()
-
-	# --- live state (always current; a stale open truck must never hide) ---
-	def n_status(s):
-		return frappe.db.count("Loading Plan", {"plan_status": s})
-
-	live = {
-		"open": sum(n_status(s) for s in OPEN_STATES),
-		"in_progress": n_status("In Progress"),
-		"pending_approval": n_status("Pending Approval"),
-		"gi_awaiting_release": frappe.db.count("WMSLite SAP Confirmation", {"status": "Held"}),
-		"gi_failed": frappe.db.count("WMSLite SAP Confirmation",
-			{"status": ["in", ("Failed (Retryable)", "Failed (Business)", "Exhausted")]}),
+	return {
+		"sites": classify.site_options(),
+		"material_types": list(classify.MATERIAL_TYPES),
+		"txn_types": [list(g) for g in classify.TXN_GROUPS],
+		"support": _VIEW_SUPPORT,
 	}
 
-	# --- throughput (scoped to range) ---
+
+def _site_plan_names(site):
+	"""Loading Plan names belonging to `site`, or None when no site filter is on.
+
+	Loading Plans carry no bin code, so site comes from `source_plant` through
+	the plant codes on the WMSLite Site master. The list is small (139 plans on
+	the client's site); switch to a join if that ever changes.
+	"""
+	if not site:
+		return None
+	vals = {}
+	where = classify.plant_where("source_plant", site, vals)
+	return frappe.db.sql_list(f"SELECT name FROM `tabLoading Plan` WHERE {where}", vals)
+
+
+def _loading_stats(date_from, date_to, site):
+	"""Loading (Outbound) tiles: live plan state, throughput, coil progress.
+	Live tiles are always "now" (a stale open truck must never hide); throughput
+	and progress are scoped to [date_from .. date_to] (whole days)."""
+	plan_names = _site_plan_names(site)
+	if plan_names == []:   # a site with no plans at all: everything is zero
+		return {
+			"live": {"open": 0, "in_progress": 0, "pending_approval": 0,
+					 "gi_awaiting_release": 0, "gi_failed": 0},
+			"throughput": {"completed": 0, "coils_loaded": 0, "rejects": 0,
+						   "date_from": date_from, "date_to": date_to},
+			"coils": {"planned": 0, "loaded": 0, "skipped": 0, "pending": 0, "progress_pct": 0},
+		}
+
+	def scoped(f, key="name"):
+		if plan_names is not None:
+			f[key] = ["in", plan_names]
+		return f
+
+	def n_status(st):
+		return frappe.db.count("Loading Plan", scoped({"plan_status": st}))
+
+	live = {
+		"open": sum(n_status(st) for st in OPEN_STATES),
+		"in_progress": n_status("In Progress"),
+		"pending_approval": n_status("Pending Approval"),
+		"gi_awaiting_release": frappe.db.count(
+			"WMSLite SAP Confirmation", scoped({"status": "Held"}, "loading_plan")),
+		"gi_failed": frappe.db.count("WMSLite SAP Confirmation", scoped(
+			{"status": ["in", ("Failed (Retryable)", "Failed (Business)", "Exhausted")]},
+			"loading_plan")),
+	}
+
 	rng = _date_range(date_from, date_to)
-	completed_f = {"plan_status": ["in", ("Completed", "Completed (Short)")]}
-	loaded_f = {"event_type": "Loaded"}
-	reject_f = {"event_type": "Rejected"}
+	completed_f = scoped({"plan_status": ["in", ("Completed", "Completed (Short)")]})
+	loaded_f = scoped({"event_type": "Loaded"}, "loading_plan")
+	reject_f = scoped({"event_type": "Rejected"}, "loading_plan")
 	if rng:
 		completed_f["completed_at"] = rng
 		loaded_f["event_time"] = rng
 		reject_f["event_time"] = rng
-
 	throughput = {
 		"completed": frappe.db.count("Loading Plan", completed_f),
 		"coils_loaded": frappe.db.count("Coil Load Event", loaded_f),
@@ -76,8 +143,7 @@ def get_dashboard(date_from=None, date_to=None):
 		"date_to": date_to,
 	}
 
-	# --- overall coil stock for plans received in range (progress bar) ---
-	plan_filter = {}
+	plan_filter = scoped({})
 	if rng:
 		plan_filter["received_at"] = rng
 	rows = frappe.db.get_all("Loading Plan", filters=plan_filter,
@@ -85,14 +151,6 @@ def get_dashboard(date_from=None, date_to=None):
 	planned = sum(int(r.total_coils or 0) for r in rows)
 	loaded = sum(int(r.loaded_coils or 0) for r in rows)
 	skipped = sum(int(r.skipped_coils or 0) for r in rows)
-
-	# --- inventory snapshot (always "now": stock on hand is a live figure, not
-	# a throughput one, so the date range must not touch it) ---
-	inv = frappe.db.sql("""SELECT COUNT(*) coils, COUNT(DISTINCT bin_code) bins,
-			COALESCE(SUM(weight), 0) weight,
-			SUM(CASE WHEN status = 'Picked' THEN 1 ELSE 0 END) picked
-		FROM `tabBin Inventory`""", as_dict=True)[0]
-
 	return {
 		"live": live,
 		"throughput": throughput,
@@ -101,16 +159,105 @@ def get_dashboard(date_from=None, date_to=None):
 			"pending": planned - loaded - skipped,
 			"progress_pct": round(100 * loaded / planned, 1) if planned else 0,
 		},
-		"inventory": {
-			"coils": cint(inv.coils), "bins": cint(inv.bins),
-			"weight": round(float(inv.weight or 0), 1), "picked": cint(inv.picked),
-		},
-		"scans": _scan_stats(date_from, date_to),
+	}
+
+
+def _inventory_stats(site, material_type):
+	"""Stock on hand — always "now": a live figure, never date-ranged."""
+	where, vals = ["1 = 1"], {}
+	if site:
+		where.append(classify.site_where("bin_code", site, vals))
+	if material_type:
+		where.append(classify.material_where("product", material_type, vals))
+	inv = frappe.db.sql(f"""SELECT COUNT(*) coils, COUNT(DISTINCT bin_code) bins,
+			COALESCE(SUM(weight), 0) weight,
+			SUM(CASE WHEN status = 'Picked' THEN 1 ELSE 0 END) picked
+		FROM `tabBin Inventory` WHERE {" AND ".join(where)}""", vals, as_dict=True)[0]
+	return {
+		"coils": cint(inv.coils), "bins": cint(inv.bins),
+		"weight": round(float(inv.weight or 0), 1), "picked": cint(inv.picked),
+	}
+
+
+def _rm_stats(date_from, date_to, site, material_type, stale_hours=4):
+	"""RM Movement tiles: the floor now (Bin Inventory state) plus movements in
+	range (the ledger). Site on a Bin Inventory row is the destination line's
+	prefix; on the ledger it is the stored column."""
+	where = ["rm_destination IS NOT NULL", "rm_destination != ''"]
+	vals = {"transit": RM_IN_TRANSIT, "recvd": RM_RECEIVED}
+	if site:
+		where.append(classify.site_where("rm_destination", site, vals))
+	if material_type:
+		where.append(classify.material_where("product", material_type, vals))
+	clause = " AND ".join(where)
+	now = frappe.db.sql(f"""
+		SELECT SUM(CASE WHEN rm_status = %(transit)s THEN 1 ELSE 0 END) in_transit,
+			COUNT(DISTINCT CASE WHEN rm_status = %(transit)s THEN rm_destination END) lines_active,
+			SUM(CASE WHEN rm_status = %(recvd)s AND rm_unplanned = 1 THEN 1 ELSE 0 END) flagged
+		FROM `tabBin Inventory` WHERE {clause}""", vals, as_dict=True)[0]
+	stale = frappe.db.sql(f"""
+		SELECT COUNT(*) FROM (
+			SELECT rm_destination, MIN(rm_dispatched_at) oldest
+			FROM `tabBin Inventory` WHERE {clause} AND rm_status = %(transit)s
+			GROUP BY rm_destination) t
+		WHERE t.oldest IS NOT NULL AND t.oldest <= %(cutoff)s""",
+		dict(vals, cutoff=add_to_date(now_datetime(), hours=-stale_hours)))[0][0]
+
+	twhere = ["transaction_type IN %(types)s", "reversed = 0"]
+	tvals = {"types": (RM_TXN_DISPATCH, RM_TXN_RECEIPT), "d": RM_TXN_DISPATCH, "r": RM_TXN_RECEIPT}
+	if date_from:
+		twhere.append("scanned_at >= %(df)s")
+		tvals["df"] = f"{date_from} 00:00:00"
+	if date_to:
+		twhere.append("scanned_at <= %(dt)s")
+		tvals["dt"] = f"{date_to} 23:59:59"
+	if site:
+		twhere.append("site = %(site)s")
+		tvals["site"] = site
+	if material_type:
+		twhere.append("material_type = %(mat)s")
+		tvals["mat"] = material_type
+	moves = frappe.db.sql(f"""
+		SELECT SUM(CASE WHEN transaction_type = %(d)s THEN 1 ELSE 0 END) dispatched,
+			SUM(CASE WHEN transaction_type = %(r)s THEN 1 ELSE 0 END) received
+		FROM `tabCoil Transaction` WHERE {" AND ".join(twhere)}""", tvals, as_dict=True)[0]
+	return {
+		"in_transit": cint(now.in_transit), "lines_active": cint(now.lines_active),
+		"flagged": cint(now.flagged), "stale_lines": cint(stale), "stale_hours": stale_hours,
+		"dispatched": cint(moves.dispatched), "received": cint(moves.received),
+		"date_from": date_from, "date_to": date_to,
 	}
 
 
 @frappe.whitelist()
-def get_trucks(status=None, q=None, date_from=None, date_to=None, limit=100):
+def get_dashboard(date_from=None, date_to=None, site=None, material_type=None, txn_type=None):
+	"""Dashboard tiles, grouped by the "Transaction Type" selector.
+
+	`txn_type` = "" / None computes every group; "loading", "inventory" or "rm"
+	computes just that one, and the response only carries the keys it computed
+	(`live` / `throughput` / `coils`, `inventory` / `scans`, `rm`). Live tiles are
+	always "now"; range-scoped tiles say so in their own `date_from` / `date_to`.
+	"""
+	_require_console()
+	site = site or None
+	material_type = material_type or None
+	groups = [txn_type] if txn_type in DASH_GROUPS else list(DASH_GROUPS)
+	out = {"groups": groups,
+		   "filters": {"site": site, "material_type": material_type, "txn_type": txn_type or ""}}
+	if "loading" in groups:
+		out.update(_loading_stats(date_from, date_to, site))
+	if "inventory" in groups:
+		out["inventory"] = _inventory_stats(site, material_type)
+		# RM ledger rows are excluded here (they have their own tiles), so the
+		# "Scans" figure reads the same under "All" and "Inventory scanning".
+		out["scans"] = _scan_stats(date_from, date_to, site, material_type, exclude_rm=True)
+	if "rm" in groups:
+		out["rm"] = _rm_stats(date_from, date_to, site, material_type)
+	return out
+
+
+@frappe.whitelist()
+def get_trucks(status=None, q=None, date_from=None, date_to=None, limit=100, site=None):
 	_require_console()
 	filters = {}
 	if status:
@@ -120,6 +267,11 @@ def get_trucks(status=None, q=None, date_from=None, date_to=None, limit=100):
 	rng = _date_range(date_from, date_to)
 	if rng:
 		filters["received_at"] = rng
+	plan_names = _site_plan_names(site)
+	if plan_names == []:
+		return []
+	if plan_names is not None:
+		filters["name"] = ["in", plan_names]
 	return frappe.get_all(
 		"Loading Plan", filters=filters,
 		fields=["name", "truck_number", "plan_status", "source", "sap_plan_id",
@@ -204,7 +356,7 @@ def complete_plan(plan):
 # outbound SAP goods-issue confirmations
 # --------------------------------------------------------------------------
 @frappe.whitelist()
-def get_confirmations(status=None, date_from=None, date_to=None, limit=100):
+def get_confirmations(status=None, date_from=None, date_to=None, limit=100, site=None):
 	_require_console()
 	filters = {}
 	if status:
@@ -212,6 +364,11 @@ def get_confirmations(status=None, date_from=None, date_to=None, limit=100):
 	rng = _date_range(date_from, date_to)
 	if rng:
 		filters["creation"] = rng
+	plan_names = _site_plan_names(site)
+	if plan_names == []:
+		return []
+	if plan_names is not None:
+		filters["loading_plan"] = ["in", plan_names]
 	return frappe.get_all(
 		"WMSLite SAP Confirmation", filters=filters,
 		fields=["name", "loading_plan", "truck_number", "sap_plan_id", "confirmation_type",
@@ -266,11 +423,11 @@ def get_sap_log(result=None, direction=None, date_from=None, date_to=None, limit
 # --------------------------------------------------------------------------
 # SAP Loading (outbound T1) — per-coil push status
 # --------------------------------------------------------------------------
-_T1_STATES = ("Pending", "Sent", "Failed")
+_T1_STATES = ("Pending", "Sending", "Sent", "Failed")
 
 
 @frappe.whitelist()
-def get_coil_loading(status=None, truck=None, date_from=None, date_to=None, limit=200):
+def get_coil_loading(status=None, truck=None, date_from=None, date_to=None, limit=200, site=None):
 	"""Per-coil T1 loading-push records across all plans. Only coils that are (or
 	should be) pushed to SAP appear — i.e. sap_loading_status in Pending/Sent/Failed."""
 	_require_console()
@@ -286,6 +443,8 @@ def get_coil_loading(status=None, truck=None, date_from=None, date_to=None, limi
 	if date_to:
 		conds.append("c.sap_loading_pushed_at <= %(dt)s")
 		params["dt"] = date_to + " 23:59:59"
+	if site:
+		conds.append(classify.plant_where("p.source_plant", site, params))
 	return frappe.db.sql(
 		"""
 		SELECT c.name, c.coil_barcode, c.parent AS plan, p.truck_number, p.sap_plan_id,
@@ -313,41 +472,98 @@ def retry_coil_loading(coil):
 	return res
 
 
+@frappe.whitelist()
+def retry_count_push(txn):
+	"""Re-arm a Failed in-app count scan's T1 push and enqueue the sweep."""
+	_require_console()
+	from sbx_wmslite import count_push
+
+	res = count_push.requeue(txn)
+	if not res.get("ok"):
+		frappe.throw(_("Cannot retry: {0}").format(res.get("skipped") or "not retryable"))
+	return res
+
+
+@frappe.whitelist()
+def retry_sap_push(txn):
+	"""Re-arm a Failed Coil Transaction push, whichever push owns the row:
+	an in-app Inventory Count scan (T1, count_push) or an RM line receipt (T2,
+	rm_push). The console's scan feed shows both in one SAP column."""
+	_require_console()
+	from sbx_wmslite import count_push, rm_push
+
+	tt = frappe.db.get_value("Coil Transaction", txn, "transaction_type")
+	mod = rm_push if tt == rm_push.RM_TXN_TYPE else count_push
+	res = mod.requeue(txn)
+	if not res.get("ok"):
+		frappe.throw(_("Cannot retry: {0}").format(res.get("skipped") or "not retryable"))
+	return res
+
+
 # --------------------------------------------------------------------------
 # Bin Inventory — display
 # --------------------------------------------------------------------------
+def _bin_inventory_where(q=None, bin_code=None, status=None, site=None, material_type=None):
+	where, vals = ["1 = 1"], {}
+	if bin_code:
+		where.append("bin_code = %(bin)s")
+		vals["bin"] = bin_code
+	if status:
+		where.append("status = %(status)s")
+		vals["status"] = status
+	if q:
+		where.append("(coil_barcode LIKE %(q)s OR bin_code LIKE %(q)s)")
+		vals["q"] = f"{q}%"   # prefix: index-backed (see _txn_where)
+	if site:
+		where.append(classify.site_where("bin_code", site, vals))
+	if material_type:
+		where.append(classify.material_where("product", material_type, vals))
+	return " AND ".join(where), vals
+
+
 @frappe.whitelist()
-def get_bin_inventory(q=None, bin_code=None, status=None, limit=50, start=0):
+def get_bin_inventory(q=None, bin_code=None, status=None, limit=50, start=0,
+					  site=None, material_type=None):
 	"""Coil-level inventory, paginated.
 
 	`total` is the count MATCHING the filters (not the table size) — the UI shows
 	"showing N of M", so a filtered search must narrow M or the pager lies.
 	"""
 	_require_console()
-	filters = {}
-	if bin_code:
-		filters["bin_code"] = bin_code
-	if status:
-		filters["status"] = status
-	or_filters = None
-	if q:
-		or_filters = [["coil_barcode", "like", f"{q}%"], ["bin_code", "like", f"{q}%"]]
-	common = {"filters": filters, "or_filters": or_filters}
-	rows = frappe.get_all(
-		"Bin Inventory",
-		fields=["name as coil_barcode", "bin_code", "material_grade", "weight", "zone",
-				"aisle", "status", "source", "updated_at"],
-		# most-recently-touched first: with 50k+ coils the useful rows are the
-		# ones that just moved, and bin_code asc pinned you to the same page.
-		order_by="updated_at desc, coil_barcode asc",
-		limit_page_length=cint(limit), limit_start=cint(start), **common)
-	total = frappe.db.count("Bin Inventory", filters=filters) if not q else len(
-		frappe.get_all("Bin Inventory", pluck="name", limit_page_length=0, **common))
-	return {"rows": rows, "total": total, "start": cint(start), "limit": cint(limit)}
+	clause, vals = _bin_inventory_where(q, bin_code, status, site, material_type)
+	sel = dict(vals)
+	rows = frappe.db.sql(f"""SELECT coil_barcode, bin_code, material_grade, weight, zone,
+			aisle, status, source, updated_at, coil_qr_raw, sized,
+			{classify.site_sql("bin_code", sel)} AS site,
+			{classify.material_sql("product", sel)} AS material_type
+		FROM `tabBin Inventory` WHERE {clause}
+		ORDER BY updated_at DESC, coil_barcode ASC
+		LIMIT %(limit)s OFFSET %(start)s""",
+		dict(sel, limit=cint(limit), start=cint(start)), as_dict=True)
+	# Weight (MT) as printed on the coil's QR label; coils known only by a plain
+	# barcode (mostly the SAP feed) keep the stored weight the feed supplied.
+	for r in rows:
+		qr_w = qr_weight_mt(r.coil_qr_raw)
+		if qr_w is not None:
+			r.weight, r.weight_source = qr_w, "QR"
+		else:
+			r.weight_source = "Stored" if r.weight else ""
+		# Size the same way: off the QR label (4th '-' part, decode.qr_size), else
+		# the size the SAP feed stored for the coil.
+		qr_s = qr_size(r.coil_qr_raw)
+		if qr_s:
+			r.size, r.size_source = qr_s, "QR"
+		else:
+			r.size = r.sized or ""
+			r.size_source = "Stored" if r.size else ""
+	# most-recently-touched first: with 50k+ coils the useful rows are the ones
+	# that just moved, and bin_code asc pinned you to the same page.
+	total = frappe.db.sql(f"SELECT COUNT(*) FROM `tabBin Inventory` WHERE {clause}", vals)[0][0]
+	return {"rows": rows, "total": cint(total), "start": cint(start), "limit": cint(limit)}
 
 
 @frappe.whitelist()
-def get_bin_rollup(q=None, limit=50, start=0):
+def get_bin_rollup(q=None, limit=50, start=0, site=None, material_type=None):
 	"""Inventory grouped by bin — 760 bins instead of 53k coils.
 
 	This is the default Inventory view: a flat coil list of that size can't be
@@ -359,21 +575,27 @@ def get_bin_rollup(q=None, limit=50, start=0):
 	if q:
 		where.append("(bin_code LIKE %(q)s OR coil_barcode LIKE %(q)s)")
 		vals["q"] = f"{q}%"   # prefix: index-backed (see _txn_where)
+	if site:
+		where.append(classify.site_where("bin_code", site, vals))
+	if material_type:
+		where.append(classify.material_where("product", material_type, vals))
 	clause = " AND ".join(where)
+	sel = dict(vals)
 	rows = frappe.db.sql(f"""SELECT bin_code, COUNT(*) coils, COALESCE(SUM(weight), 0) weight,
 			MAX(updated_at) last_updated,
-			SUM(CASE WHEN status = 'Picked' THEN 1 ELSE 0 END) picked
+			SUM(CASE WHEN status = 'Picked' THEN 1 ELSE 0 END) picked,
+			MAX({classify.site_sql("bin_code", sel)}) AS site
 		FROM `tabBin Inventory` WHERE {clause}
 		GROUP BY bin_code ORDER BY bin_code ASC
 		LIMIT %(limit)s OFFSET %(start)s""",
-		dict(vals, limit=cint(limit), start=cint(start)), as_dict=True)
+		dict(sel, limit=cint(limit), start=cint(start)), as_dict=True)
 	total = frappe.db.sql(
 		f"SELECT COUNT(DISTINCT bin_code) FROM `tabBin Inventory` WHERE {clause}", vals)[0][0]
 	return {"rows": rows, "total": cint(total), "start": cint(start), "limit": cint(limit)}
 
 
 @frappe.whitelist()
-def get_bin_master(q=None, disabled=None, limit=50, start=0):
+def get_bin_master(q=None, disabled=None, limit=50, start=0, site=None):
 	"""The location master itself — every label the floor is allowed to scan.
 
 	Distinct from `get_bin_rollup`, which reads Bin Inventory and so only knows
@@ -381,26 +603,44 @@ def get_bin_master(q=None, disabled=None, limit=50, start=0):
 	scan?" needs to see the empty ones too, which is exactly the set this returns.
 	"""
 	_require_console()
-	filters = {}
+	where, vals = ["1 = 1"], {}
 	if q:
-		filters["bin_code"] = ["like", f"{q}%"]   # prefix: index-backed
+		where.append("bin_code LIKE %(q)s")   # prefix: index-backed
+		vals["q"] = f"{q}%"
 	if disabled not in (None, ""):
-		filters["disabled"] = cint(disabled)
-	rows = frappe.get_all(
-		"WMSLite Bin", filters=filters,
-		fields=["name as bin_code", "zone", "aisle", "is_line", "disabled", "source"],
-		order_by="bin_code asc",
-		limit_page_length=cint(limit), limit_start=cint(start))
-	total = frappe.db.count("WMSLite Bin", filters=filters)
+		where.append("disabled = %(disabled)s")
+		vals["disabled"] = cint(disabled)
+	if site:
+		where.append(classify.site_where("bin_code", site, vals))
+	clause = " AND ".join(where)
+	sel = dict(vals)
+	rows = frappe.db.sql(f"""SELECT name AS bin_code, zone, aisle, is_line, disabled, source,
+			{classify.site_sql("bin_code", sel)} AS site
+		FROM `tabWMSLite Bin` WHERE {clause}
+		ORDER BY bin_code ASC
+		LIMIT %(limit)s OFFSET %(start)s""",
+		dict(sel, limit=cint(limit), start=cint(start)), as_dict=True)
+	total = frappe.db.sql(f"SELECT COUNT(*) FROM `tabWMSLite Bin` WHERE {clause}", vals)[0][0]
 	return {"rows": rows, "total": cint(total), "start": cint(start), "limit": cint(limit)}
 
 
 # --------------------------------------------------------------------------
 # scan transactions (Coil Transaction — the append-only scan feed)
 # --------------------------------------------------------------------------
-def _txn_where(date_from=None, date_to=None, source=None, q=None, unprocessed=0):
-	"""Shared WHERE builder for the transaction list + its counts."""
+def _txn_where(date_from=None, date_to=None, source=None, q=None, unprocessed=0,
+			   site=None, material_type=None):
+	"""Shared WHERE builder for the transaction list + its counts.
+
+	`site` / `material_type` hit the stored, indexed columns that
+	CoilTransaction.before_insert fills (deriving them here cost 17 s over the
+	whole feed), so even "Unassigned" is a plain equality."""
 	where, vals = ["1 = 1"], {}
+	if site:
+		where.append("site = %(site)s")
+		vals["site"] = site
+	if material_type:
+		where.append("material_type = %(mat)s")
+		vals["mat"] = material_type
 	if date_from:
 		where.append("scanned_at >= %(df)s")
 		vals["df"] = f"{date_from} 00:00:00"
@@ -421,14 +661,18 @@ def _txn_where(date_from=None, date_to=None, source=None, q=None, unprocessed=0)
 	return " AND ".join(where), vals
 
 
-def _scan_stats(date_from=None, date_to=None):
+def _scan_stats(date_from=None, date_to=None, site=None, material_type=None, exclude_rm=False):
 	"""Dashboard tiles for scan activity, scoped to the same range as throughput.
 
 	The DISTINCT is deliberately a SEPARATE query: folded into the aggregate below
 	it forces a full table scan (measured 2807ms over 260k rows), while on its own
-	it rides the coil_barcode index (503ms).
+	it rides the coil_barcode index (503ms). `exclude_rm` drops the RM ledger rows
+	(dispatch / receipt / reversals) — the dashboard shows those on their own tiles.
 	"""
-	clause, vals = _txn_where(date_from, date_to)
+	clause, vals = _txn_where(date_from, date_to, site=site, material_type=material_type)
+	if exclude_rm:
+		clause += " AND COALESCE(transaction_type, '') NOT LIKE %(rm_pat)s"
+		vals["rm_pat"] = "RM %"
 	row = frappe.db.sql(f"""SELECT COUNT(*) total,
 			SUM(CASE WHEN source = 'Push API' THEN 1 ELSE 0 END) sap_feed,
 			SUM(CASE WHEN source = 'In-app' THEN 1 ELSE 0 END) in_app,
@@ -447,23 +691,25 @@ def _scan_stats(date_from=None, date_to=None):
 
 @frappe.whitelist()
 def get_coil_transactions(q=None, source=None, date_from=None, date_to=None,
-						  unprocessed=0, limit=50, start=0):
+						  unprocessed=0, limit=50, start=0, site=None, material_type=None):
 	"""The scan feed, newest first, paginated.
 
 	`source` splits the two very different populations sharing this table:
 	'Push API' (the SAP inventory feed) vs 'In-app' (Inventory Count scans).
 	"""
 	_require_console()
-	clause, vals = _txn_where(date_from, date_to, source, q, unprocessed)
+	clause, vals = _txn_where(date_from, date_to, source, q, unprocessed, site, material_type)
 	rows = frappe.db.sql(f"""SELECT name, coil_barcode, bin_code, scanned_at, transaction_type,
-			source, username, weight, material_grade, qc, processed, plant, product
+			source, username, weight, material_grade, qc, processed, plant, product,
+			site, material_type,
+			reversed, sap_status, sap_message, sap_pushed_at
 		FROM `tabCoil Transaction` WHERE {clause}
 		ORDER BY scanned_at DESC, name DESC
 		LIMIT %(limit)s OFFSET %(start)s""",
 		dict(vals, limit=cint(limit), start=cint(start)), as_dict=True)
 	total = frappe.db.sql(f"SELECT COUNT(*) FROM `tabCoil Transaction` WHERE {clause}", vals)[0][0]
 	return {"rows": rows, "total": cint(total), "start": cint(start), "limit": cint(limit),
-			"stats": _scan_stats(date_from, date_to)}
+			"stats": _scan_stats(date_from, date_to, site, material_type)}
 
 
 @frappe.whitelist()
@@ -474,7 +720,10 @@ def get_transaction_detail(name):
 		"Coil Transaction", name,
 		["name", "coil_barcode", "bin_code", "scanned_at", "transaction_type", "source",
 		 "username", "weight", "material_grade", "qc", "plant", "product", "sized",
-		 "processed", "processed_at", "bin_inventory", "txn_key", "raw_json", "creation"],
+		 "site", "material_type",
+		 "processed", "processed_at", "bin_inventory", "txn_key", "raw_json", "creation",
+		 "reversed", "reversed_by", "reversed_at", "sap_status", "sap_message",
+		 "sap_pushed_at", "sap_attempts", "sap_request", "sap_response"],
 		as_dict=True)
 	if not d:
 		frappe.throw(_("Transaction {0} not found").format(name))
@@ -517,7 +766,7 @@ _EXPORT_COLUMNS = {
 		("Claimed By", "claimed_by"), ("Received At", "received_at"),
 	]),
 	"inventory_bin": ("Inventory by Bin", [
-		("Bin", "bin_code"), ("Coils", "coils"), ("Weight", "weight"),
+		("Bin", "bin_code"), ("Site", "site"), ("Coils", "coils"), ("Weight", "weight"),
 		("Picked", "picked"), ("Last Updated", "last_updated"),
 	]),
 	# Column LABELS here are load-bearing: `parse_upload` suggests a mapping by
@@ -527,17 +776,26 @@ _EXPORT_COLUMNS = {
 	"bin_master": ("Bin Master", [
 		("Bin Code", "bin_code"), ("Zone", "zone"), ("Aisle", "aisle"),
 		("Is Line", "is_line"), ("Disabled", "disabled"), ("Source", "source"),
+		# Derived (not a dataset column): ignored on re-upload, see _mapped_rows.
+		("Site", "site"),
 	]),
 	"inventory_coil": ("Inventory by Coil", [
-		("Bin", "bin_code"), ("Coil", "coil_barcode"), ("Grade", "material_grade"),
-		("Weight", "weight"), ("Zone", "zone"), ("Aisle", "aisle"),
+		("Bin", "bin_code"), ("Coil", "coil_barcode"), ("Site", "site"),
+		("Grade", "material_grade"),
+		("Weight (MT)", "weight"), ("Size", "size"), ("Zone", "zone"), ("Aisle", "aisle"),
 		("Status", "status"), ("Source", "source"), ("Updated", "updated_at"),
+		# The full string as scanned off the label, one cell — blank for coils
+		# known only by a plain barcode.
+		("Raw QR", "coil_qr_raw"),
 	]),
 	"transactions": ("Scan Transactions", [
 		("Scanned At", "scanned_at"), ("Coil", "coil_barcode"), ("Bin", "bin_code"),
+		("Site", "site"), ("Material", "material_type"),
 		("Type", "transaction_type"), ("Source", "source"), ("Scanned By", "username"),
 		("Weight", "weight"), ("Grade", "material_grade"), ("QC", "qc"),
 		("Plant", "plant"), ("Product", "product"), ("Derived", "processed"),
+		("Undone", "reversed"), ("SAP Status", "sap_status"), ("SAP Message", "sap_message"),
+		("SAP Pushed At", "sap_pushed_at"),
 	]),
 	"confirmations": ("SAP Confirmations", [
 		("Confirmation", "name"), ("Truck", "truck_number"), ("Loading Plan", "loading_plan"),
@@ -589,32 +847,36 @@ def _export_rows(view, args):
 	limit = EXPORT_LIMIT
 	df, dt = args.get("date_from"), args.get("date_to")
 	q, status = args.get("q"), args.get("status")
+	# the console's global filters ride along on every export URL
+	site, mat = args.get("site") or None, args.get("material_type") or None
 
 	if view == "trucks":
-		return get_trucks(status=status, q=q, date_from=df, date_to=dt, limit=limit)
+		return get_trucks(status=status, q=q, date_from=df, date_to=dt, limit=limit, site=site)
 	if view == "inventory_bin":
-		return get_bin_rollup(q=q, limit=limit, start=0)["rows"]
+		return get_bin_rollup(q=q, limit=limit, start=0, site=site, material_type=mat)["rows"]
 	if view == "bin_master":
-		return get_bin_master(q=q, disabled=args.get("disabled"), limit=limit, start=0)["rows"]
+		return get_bin_master(q=q, disabled=args.get("disabled"), limit=limit, start=0,
+							  site=site)["rows"]
 	if view == "inventory_coil":
 		return get_bin_inventory(q=q, bin_code=args.get("bin_code"), status=status,
-								 limit=limit, start=0)["rows"]
+								 limit=limit, start=0, site=site, material_type=mat)["rows"]
 	if view == "transactions":
 		return get_coil_transactions(q=q, source=args.get("source"), date_from=df, date_to=dt,
 									 unprocessed=args.get("unprocessed") or 0,
-									 limit=limit, start=0)["rows"]
+									 limit=limit, start=0, site=site, material_type=mat)["rows"]
 	if view == "confirmations":
-		return get_confirmations(status=status, date_from=df, date_to=dt, limit=limit)
+		return get_confirmations(status=status, date_from=df, date_to=dt, limit=limit, site=site)
 	if view == "saploading":
 		return get_coil_loading(status=status, truck=args.get("truck") or q,
-								date_from=df, date_to=dt, limit=limit)
+								date_from=df, date_to=dt, limit=limit, site=site)
 	if view == "saplog":
 		return get_sap_log(result=args.get("result"), direction=args.get("direction"),
 						   date_from=df, date_to=dt, limit=limit)
 	if view == "rm":
 		return get_rm_movement(status=status, destination=args.get("destination"),
 							   flagged=args.get("flagged") or 0, q=q,
-							   date_from=df, date_to=dt, limit=limit, start=0)["rows"]
+							   date_from=df, date_to=dt, limit=limit, start=0,
+							   site=site, material_type=mat)["rows"]
 	if view == "truck_detail":
 		plan = args.get("plan")
 		if not plan:
@@ -681,21 +943,23 @@ _FILTER_LABELS = {"date_from": "from", "date_to": "to", "q": "search", "status":
 				  "truck": "truck", "bin_code": "bin", "plan": "plan",
 				  "unprocessed": "unprocessed only",
 				  "destination": "line", "flagged": "flagged only",
-				  "disabled": "disabled"}
+				  "disabled": "disabled",
+				  "site": "site", "material_type": "material", "txn_type": "section"}
 
 # Only the keys a view actually queries on: echoing an ignored param (a date on
 # the inventory rollup, say) would read as a filter that never ran.
 _VIEW_FILTERS = {
-	"trucks": ["q", "status", "date_from", "date_to"],
-	"inventory_bin": ["q"],
-	"bin_master": ["q", "disabled"],
-	"inventory_coil": ["q", "bin_code", "status"],
-	"transactions": ["q", "source", "unprocessed", "date_from", "date_to"],
-	"confirmations": ["status", "date_from", "date_to"],
-	"saploading": ["status", "truck", "q", "date_from", "date_to"],
+	"trucks": ["q", "status", "date_from", "date_to", "site"],
+	"inventory_bin": ["q", "site", "material_type"],
+	"bin_master": ["q", "disabled", "site"],
+	"inventory_coil": ["q", "bin_code", "status", "site", "material_type"],
+	"transactions": ["q", "source", "unprocessed", "date_from", "date_to", "site", "material_type"],
+	"confirmations": ["status", "date_from", "date_to", "site"],
+	"saploading": ["status", "truck", "q", "date_from", "date_to", "site"],
 	"saplog": ["result", "direction", "date_from", "date_to"],
-	"rm": ["q", "status", "destination", "flagged", "date_from", "date_to"],
+	"rm": ["q", "status", "destination", "flagged", "date_from", "date_to", "site", "material_type"],
 	"truck_detail": ["plan"],
+	"dashboard": ["date_from", "date_to", "site", "material_type", "txn_type"],
 }
 
 
@@ -715,36 +979,52 @@ def _filter_note(view, args):
 
 
 @frappe.whitelist()
-def export_dashboard(date_from=None, date_to=None):
-	"""The dashboard is tiles, not a table — export it as metric/value pairs."""
+def export_dashboard(date_from=None, date_to=None, site=None, material_type=None, txn_type=None):
+	"""The dashboard is tiles, not a table — export it as metric/value pairs,
+	for exactly the sections (and filters) that are on screen."""
 	_require_console()
-	d = get_dashboard(date_from, date_to)
+	d = get_dashboard(date_from, date_to, site, material_type, txn_type)
 	rng = "{0} → {1}".format(date_from or "beginning", date_to or "today")
-	rows = [
-		("Now", "Open / Active trucks", d["live"]["open"]),
-		("Now", "In Progress", d["live"]["in_progress"]),
-		("Now", "Awaiting Approval", d["live"]["pending_approval"]),
-		("Now", "GI Awaiting Release", d["live"]["gi_awaiting_release"]),
-		("Now", "GI Failed", d["live"]["gi_failed"]),
-		("Throughput", "Completed trucks", d["throughput"]["completed"]),
-		("Throughput", "Coils loaded", d["throughput"]["coils_loaded"]),
-		("Throughput", "Rejects", d["throughput"]["rejects"]),
-		("Coil progress", "Planned", d["coils"]["planned"]),
-		("Coil progress", "Loaded", d["coils"]["loaded"]),
-		("Coil progress", "Skipped", d["coils"]["skipped"]),
-		("Coil progress", "Pending", d["coils"]["pending"]),
-		("Coil progress", "Progress %", d["coils"]["progress_pct"]),
-		("Inventory on hand", "Coils in stock", d["inventory"]["coils"]),
-		("Inventory on hand", "Bins occupied", d["inventory"]["bins"]),
-		("Inventory on hand", "Total weight", d["inventory"]["weight"]),
-		("Inventory on hand", "Picked", d["inventory"]["picked"]),
-		("Scan activity", "Scans", d["scans"]["total"]),
-		("Scan activity", "From SAP feed", d["scans"]["sap_feed"]),
-		("Scan activity", "Inventory count", d["scans"]["in_app"]),
-		("Scan activity", "Coils touched", d["scans"]["coils"]),
-		("Scan activity", "Unprocessed (now)", d["scans"]["unprocessed"]),
-		("Scan activity", "Last scan", d["scans"]["last_scan"] or "—"),
-	]
+	rows = []
+	if "live" in d:
+		rows += [
+			("Loading (Outbound) — now", "Open / Active trucks", d["live"]["open"]),
+			("Loading (Outbound) — now", "In Progress", d["live"]["in_progress"]),
+			("Loading (Outbound) — now", "Awaiting Approval", d["live"]["pending_approval"]),
+			("Loading (Outbound) — now", "GI Awaiting Release", d["live"]["gi_awaiting_release"]),
+			("Loading (Outbound) — now", "GI Failed", d["live"]["gi_failed"]),
+			("Loading throughput", "Completed trucks", d["throughput"]["completed"]),
+			("Loading throughput", "Coils loaded", d["throughput"]["coils_loaded"]),
+			("Loading throughput", "Rejects", d["throughput"]["rejects"]),
+			("Coil progress", "Planned", d["coils"]["planned"]),
+			("Coil progress", "Loaded", d["coils"]["loaded"]),
+			("Coil progress", "Skipped", d["coils"]["skipped"]),
+			("Coil progress", "Pending", d["coils"]["pending"]),
+			("Coil progress", "Progress %", d["coils"]["progress_pct"]),
+		]
+	if "inventory" in d:
+		rows += [
+			("Inventory on hand", "Coils in stock", d["inventory"]["coils"]),
+			("Inventory on hand", "Bins occupied", d["inventory"]["bins"]),
+			("Inventory on hand", "Total weight", d["inventory"]["weight"]),
+			("Inventory on hand", "Picked", d["inventory"]["picked"]),
+			("Inventory scanning", "Scans", d["scans"]["total"]),
+			("Inventory scanning", "From SAP feed", d["scans"]["sap_feed"]),
+			("Inventory scanning", "Inventory count", d["scans"]["in_app"]),
+			("Inventory scanning", "Coils touched", d["scans"]["coils"]),
+			("Inventory scanning", "Unprocessed (now)", d["scans"]["unprocessed"]),
+			("Inventory scanning", "Last scan", d["scans"]["last_scan"] or "—"),
+		]
+	if "rm" in d:
+		rows += [
+			("RM Movement", "In transit (now)", d["rm"]["in_transit"]),
+			("RM Movement", "Lines active (now)", d["rm"]["lines_active"]),
+			("RM Movement", "Ageing >= {0}h (now)".format(d["rm"]["stale_hours"]), d["rm"]["stale_lines"]),
+			("RM Movement", "Flagged receipts (now)", d["rm"]["flagged"]),
+			("RM Movement", "Dispatched", d["rm"]["dispatched"]),
+			("RM Movement", "Received", d["rm"]["received"]),
+		]
+	section = dict(classify.TXN_GROUPS).get(txn_type or "", "All")
 	stamp = now_datetime()
 	_xlsx_response(
 		"wmslite_dashboard_{0}.xlsx".format(stamp.strftime("%Y%m%d_%H%M%S")),
@@ -752,9 +1032,11 @@ def export_dashboard(date_from=None, date_to=None):
 		["SBX WMSLite — Dashboard",
 		 "Exported {0} by {1}".format(stamp.strftime("%Y-%m-%d %H:%M"), frappe.session.user),
 		 "Throughput + scan range: " + rng,
+		 "Filters: " + _filter_note("dashboard", {"site": site, "material_type": material_type,
+												  "txn_type": section if txn_type else ""}),
 		 "Live and inventory figures are as of the export time, not the range."],
 		[("Section", "section"), ("Metric", "metric"), ("Value", "value")],
-		[{"section": s, "metric": m, "value": v} for s, m, v in rows])
+		[{"section": sec, "metric": m, "value": v} for sec, m, v in rows])
 
 
 # --------------------------------------------------------------------------
@@ -928,7 +1210,7 @@ def import_commit(file_url, mapping, label=None, file_name=None, dataset="Loadin
 	spec = _dataset(dataset)
 	mapping = json.loads(mapping) if isinstance(mapping, str) else mapping
 	batch = frappe.get_doc({
-		"doctype": "Import Batch", "batch_label": label or (dataset + " upload"),
+		"doctype": "WMSLite Import Batch", "batch_label": label or (dataset + " upload"),
 		"dataset": dataset, "target_doctype": spec["target"], "status": "Queued",
 		"file_url": file_url, "file_name": file_name, "import_time": now_datetime(),
 		"imported_by": frappe.session.user,
@@ -940,7 +1222,7 @@ def import_commit(file_url, mapping, label=None, file_name=None, dataset="Loadin
 
 
 def _run_import(batch, file_url, mapping, dataset="Loading Plan"):
-	b = frappe.get_doc("Import Batch", batch)
+	b = frappe.get_doc("WMSLite Import Batch", batch)
 	b.status = "Importing"
 	b.save(ignore_permissions=True)
 	frappe.db.commit()
@@ -1110,7 +1392,7 @@ def _run_binmaster_import(rows):
 @frappe.whitelist()
 def get_import_status(batch):
 	_require_console()
-	b = frappe.get_doc("Import Batch", batch)
+	b = frappe.get_doc("WMSLite Import Batch", batch)
 	return {"status": b.status, "total_rows": b.total_rows, "inserted": b.inserted,
 			"errors": b.errors, "error_report": b.error_report,
 			"done": b.status in ("Completed", "Partial", "Failed", "Rolled Back")}
@@ -1124,13 +1406,13 @@ def delete_import_batch(batch):
 	# bin upload upserts onto a shared master that scans and stock already point
 	# at, so there is no safe undo — and reporting success while doing nothing
 	# would be worse than refusing.
-	if frappe.db.get_value("Import Batch", batch, "dataset") == "Bin Master":
+	if frappe.db.get_value("WMSLite Import Batch", batch, "dataset") == "Bin Master":
 		frappe.throw(_("A Bin Master upload can't be rolled back — it updates the shared "
 					   "location master in place. To take a location out of use, tick "
 					   "Disabled on it instead."))
 	for name in frappe.get_all("Loading Plan", filters={"import_batch": batch}, pluck="name"):
 		frappe.delete_doc("Loading Plan", name, force=1, ignore_permissions=True)
-	frappe.db.set_value("Import Batch", batch, "status", "Rolled Back")
+	frappe.db.set_value("WMSLite Import Batch", batch, "status", "Rolled Back")
 	frappe.db.commit()
 	return {"ok": True}
 
@@ -1149,7 +1431,7 @@ RM_RECEIVED = "Received"
 
 
 @frappe.whitelist()
-def get_rm_summary(stale_hours=4):
+def get_rm_summary(stale_hours=4, site=None, material_type=None):
 	"""Per-line rollup: what is in transit, how long it has been, what is flagged.
 
 	`oldest_hours` is the health signal. A line whose oldest in-transit coil is
@@ -1158,7 +1440,13 @@ def get_rm_summary(stale_hours=4):
 	"""
 	_require_console()
 	stale_hours = cint(stale_hours) or 4
-	rows = frappe.db.sql("""
+	where = ["rm_destination IS NOT NULL", "rm_destination != ''"]
+	vals = {"transit": RM_IN_TRANSIT, "recvd": RM_RECEIVED}
+	if site:   # a line's site is its own code prefix, like any other location
+		where.append(classify.site_where("rm_destination", site, vals))
+	if material_type:
+		where.append(classify.material_where("product", material_type, vals))
+	rows = frappe.db.sql(f"""
 		SELECT rm_destination destination,
 			SUM(CASE WHEN rm_status = %(transit)s THEN 1 ELSE 0 END) in_transit,
 			SUM(CASE WHEN rm_status = %(transit)s THEN COALESCE(weight, 0) ELSE 0 END) transit_weight,
@@ -1166,11 +1454,11 @@ def get_rm_summary(stale_hours=4):
 			MIN(CASE WHEN rm_status = %(transit)s THEN rm_dispatched_at END) oldest_dispatch,
 			MAX(CASE WHEN rm_status = %(recvd)s THEN rm_received_at END) last_receipt
 		FROM `tabBin Inventory`
-		WHERE rm_destination IS NOT NULL AND rm_destination != ''
+		WHERE {" AND ".join(where)}
 		GROUP BY rm_destination
 		HAVING in_transit > 0 OR flagged > 0
 		ORDER BY in_transit DESC, destination ASC""",
-		{"transit": RM_IN_TRANSIT, "recvd": RM_RECEIVED}, as_dict=True)
+		vals, as_dict=True)
 
 	now = now_datetime()
 	for r in rows:
@@ -1191,7 +1479,8 @@ def get_rm_summary(stale_hours=4):
 
 @frappe.whitelist()
 def get_rm_movement(status=None, destination=None, flagged=0, q=None,
-					date_from=None, date_to=None, limit=200, start=0):
+					date_from=None, date_to=None, limit=200, start=0,
+					site=None, material_type=None):
 	"""Coil-level RM movement list.
 
 	Dates filter on the timestamp that matters for the row's own state — dispatch
@@ -1211,6 +1500,10 @@ def get_rm_movement(status=None, destination=None, flagged=0, q=None,
 	if q:
 		where.append("(bi.coil_barcode LIKE %(q)s OR bi.rm_destination LIKE %(q)s)")
 		vals["q"] = f"{q}%"   # prefix keeps this index-backed
+	if site:
+		where.append(classify.site_where("bi.rm_destination", site, vals))
+	if material_type:
+		where.append(classify.material_where("bi.product", material_type, vals))
 	stamp = ("CASE WHEN bi.rm_status = '{0}' THEN bi.rm_received_at "
 			 "ELSE bi.rm_dispatched_at END").format(RM_RECEIVED)
 	if date_from:

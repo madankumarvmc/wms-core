@@ -12,7 +12,7 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_to_date, now_datetime
 
-from sbx_wmslite import console_api
+from sbx_wmslite import classify, console_api
 
 BIN_A = "__TEST__BIN-A"
 BIN_B = "__TEST__BIN-B"
@@ -37,16 +37,18 @@ def _mkbin(coil, bin_code, weight, status="Available"):
 	return d.name
 
 
-def _mktxn(coil, bin_code, source, txn_type, when):
+def _mktxn(coil, bin_code, source, txn_type, when, product=None, rm_destination=None):
 	key = f"__TEST__{coil}-{source}-{when}"
 	if frappe.db.exists("Coil Transaction", {"txn_key": key}):
-		return
+		return frappe.db.get_value("Coil Transaction", {"txn_key": key}, "name")
 	d = frappe.new_doc("Coil Transaction")
 	d.coil_barcode = coil
 	d.bin_code = bin_code
 	d.source = source
 	d.transaction_type = txn_type
 	d.scanned_at = when
+	d.product = product
+	d.rm_destination = rm_destination
 	d.txn_key = key
 	d.processed = 1
 	d.raw_json = '{"BATCH": "%s", "LOCATION": "%s"}' % (coil, bin_code)
@@ -70,7 +72,8 @@ def _mkmaster(code, disabled=0):
 def _cleanup():
 	frappe.set_user("Administrator")
 	for dt, field in (("Coil Transaction", "txn_key"), ("Bin Inventory", "coil_barcode"),
-					  ("WMSLite Bin", "bin_code")):
+					  ("WMSLite Bin", "bin_code"), ("Loading Plan", "truck_number"),
+					  ("WMSLite Site", "name")):
 		for n in frappe.get_all(dt, filters={field: ["like", "%__TEST__%"]}, pluck="name"):
 			frappe.delete_doc(dt, n, force=1, ignore_permissions=True)
 	if frappe.db.exists("User", PLAIN_USER):
@@ -244,6 +247,36 @@ class TestConsoleInventoryViews(FrappeTestCase):
 		_p, _h, coils = self._sheet(console_api.export_view, view="inventory_coil", bin_code=BIN_A)
 		self.assertEqual({r[1] for r in coils if r and r[1]}, {COILS[0], COILS[1]})
 
+	def test_coil_weight_comes_from_the_qr_label(self):
+		"""By Coil shows the weight printed on the QR (MT); a coil with no QR keeps
+		its stored weight. The Excel drops Material and carries the raw QR."""
+		qr = "1200 - GC Sheet-26AM272 - 0.300 mm  X 800 X 1830 mm - 2.800 MT- GCS0300"
+		frappe.db.set_value("Bin Inventory", COILS[1], "coil_qr_raw", qr, update_modified=False)
+		try:
+			frappe.db.set_value("Bin Inventory", COILS[0], "sized", "0.250 mm X 780 X 2440 mm", update_modified=False)
+			rows = {r["coil_barcode"]: r for r in console_api.get_bin_inventory(bin_code=BIN_A)["rows"]}
+			self.assertEqual((rows[COILS[1]]["weight"], rows[COILS[1]]["weight_source"]), (2.8, "QR"))
+			self.assertEqual((float(rows[COILS[0]]["weight"]), rows[COILS[0]]["weight_source"]), (1000.0, "Stored"))
+			# size: off the QR (4th '-' part); a coil with no QR keeps its SAP size
+			self.assertEqual((rows[COILS[1]]["size"], rows[COILS[1]]["size_source"]),
+							 ("0.300 mm X 800 X 1830 mm", "QR"))
+			self.assertEqual((rows[COILS[0]]["size"], rows[COILS[0]]["size_source"]),
+							 ("0.250 mm X 780 X 2440 mm", "Stored"))
+
+			_p, header, body = self._sheet(console_api.export_view, view="inventory_coil", bin_code=BIN_A)
+			self.assertNotIn("Material", header)
+			self.assertIn("Weight (MT)", header)
+			self.assertEqual(header[-1], "Raw QR")
+			by_coil = {r[1]: r for r in body if r and r[1]}
+			self.assertEqual(by_coil[COILS[1]][-1], qr)
+			self.assertEqual(float(by_coil[COILS[1]][header.index("Weight (MT)")]), 2.8)
+			self.assertEqual(header.index("Size"), header.index("Weight (MT)") + 1)
+			self.assertEqual(by_coil[COILS[1]][header.index("Size")], "0.300 mm X 800 X 1830 mm")
+			self.assertIn(by_coil[COILS[0]][-1], (None, ""))
+		finally:
+			frappe.db.set_value("Bin Inventory", COILS[1], "coil_qr_raw", None, update_modified=False)
+			frappe.db.set_value("Bin Inventory", COILS[0], "sized", None, update_modified=False)
+
 	# ---- bin master (WMSLite Bin, not Bin Inventory) ----
 	def test_bin_master_lists_locations_with_no_stock(self):
 		"""The point of this view: Inventory can only show bins that hold coils."""
@@ -261,7 +294,10 @@ class TestConsoleInventoryViews(FrappeTestCase):
 	def test_bin_master_export_labels_map_back_to_column_names(self):
 		"""The download-edit-reupload loop depends on these exact labels."""
 		_p, header, body = self._sheet(console_api.export_view, view="bin_master", q=MASTER_PREFIX)
-		self.assertEqual(header, ["Bin Code", "Zone", "Aisle", "Is Line", "Disabled", "Source"])
+		# the dataset columns first, verbatim; derived extras (Site) trail and are
+		# ignored by the upload mapping
+		self.assertEqual(header[:6], ["Bin Code", "Zone", "Aisle", "Is Line", "Disabled", "Source"])
+		self.assertEqual(header[6:], ["Site"])
 		self.assertEqual({r[0] for r in body if r and r[0]}, {MASTER_ONLY, MASTER_OFF})
 		spec = console_api.DATASETS["Bin Master"]
 		mapped = [console_api._norm_header(h) for h in header]
@@ -420,3 +456,230 @@ class TestConsoleRmViews(FrappeTestCase):
 	def test_export_carries_the_rm_rows(self):
 		rows = console_api._export_rows("rm", {"destination": self.LINE})
 		self.assertEqual({r["coil_barcode"] for r in rows}, {self.c1, self.c2, self.c3})
+
+
+class TestConsoleGlobalFilters(FrappeTestCase):
+	"""The console's global Site / Material Type filters and the dashboard's
+	Transaction Type groups.
+
+	Site and material are DERIVED (bin prefix via the WMSLite Site master; product
+	keyword), so what is pinned here is that every list endpoint agrees on the
+	derivation: a handheld row with no bin and no product resolves through its RM
+	destination and its coil's inventory record, a truck resolves through its SAP
+	plant code, and the "Unassigned" bucket really catches the rest.
+	"""
+
+	P = "__TEST__GF"
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		frappe.flags.wms_skip_backfill = True
+		_cleanup()
+		classify.seed_sites()
+		classify.clear_cache()
+		P = cls.P
+		cls.bin_j, cls.bin_r, cls.bin_p, cls.bin_u = f"JPR/{P}/A", f"CC2/{P}/B", f"RP/{P}/C", f"PKL3/{P}/D"
+		cls.line = f"JPR/{P}/LINE"
+		cls.c_j, cls.c_r, cls.c_p, cls.c_u = f"{P}_J1", f"{P}_R1", f"{P}_P1", f"{P}_U1"
+		for coil, bin_code, product in ((cls.c_j, cls.bin_j, "H.R.COIL"), (cls.c_r, cls.bin_r, "GC Sheet"),
+										(cls.c_p, cls.bin_p, "GI PIPE"), (cls.c_u, cls.bin_u, None)):
+			_mkbin(coil, bin_code, 100)
+			frappe.db.set_value("Bin Inventory", coil, "product", product, update_modified=False)
+		_mkmaster(cls.bin_j)
+		_mkmaster(cls.bin_u)
+		# feed row with a product; count row with none (borrows the coil's); RM rows with no bin
+		cls.t_feed = _mktxn(cls.c_j, cls.bin_j, "Push API", None, "2026-08-01 10:00:00", product="H.R.COIL")
+		cls.t_count = _mktxn(cls.c_p, cls.bin_p, "In-app", "Inventory Count", "2026-08-02 10:00:00")
+		cls.t_rm_d = _mktxn(cls.c_r, "", "In-app", "RM Dispatch", "2026-08-03 09:00:00", rm_destination=cls.line)
+		cls.t_rm_r = _mktxn(cls.c_r, "", "In-app", "RM Receipt", "2026-08-03 10:00:00", rm_destination=cls.line)
+		# the coil's live RM state, as rm_receive would leave it (flagged)
+		frappe.db.set_value("Bin Inventory", cls.c_r, {
+			"rm_status": "Received", "rm_destination": cls.line, "rm_cycle": 1, "rm_unplanned": 1,
+			"rm_received_at": now_datetime(), "rm_received_by": "Administrator"}, update_modified=False)
+		# trucks: site comes from the SAP plant code
+		cls.t5100 = cls._plan(f"{P}_T5100", "5100")
+		cls.t1300 = cls._plan(f"{P}_T1300", "1300")
+		cls.tnone = cls._plan(f"{P}_TNONE", None)
+		frappe.db.commit()
+
+	@classmethod
+	def tearDownClass(cls):
+		_cleanup()
+		frappe.flags.wms_skip_backfill = False
+		super().tearDownClass()
+
+	@classmethod
+	def _plan(cls, truck, source_plant):
+		p = frappe.new_doc("Loading Plan")
+		p.truck_number = truck
+		p.sap_plan_id = truck
+		p.source_plant = source_plant
+		# "Sent" so the loading-push sweep never considers this coil live
+		p.append("coils", {"coil_barcode": truck + "_C", "weight": 500, "material_grade": "GR50",
+						   "coil_status": "Loaded", "sap_loading_status": "Sent"})
+		p.insert(ignore_permissions=True)
+		return p.name
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+
+	def test_filter_options(self):
+		o = console_api.get_filter_options()
+		self.assertEqual(o["sites"][:3], ["Jangalpur", "Ranihati", "Pipe Division"])
+		self.assertEqual(o["sites"][-1], classify.UNASSIGNED)
+		self.assertEqual(o["material_types"], ["Sheet (Coil)", "Pipes", "Unassigned"])
+		self.assertEqual([k for k, _l in o["txn_types"]], ["", "inventory", "rm", "loading"])
+		self.assertEqual(o["support"]["trucks"], ["site"])
+		self.assertEqual(o["support"]["saplog"], [])
+
+	def test_site_filter_on_inventory_views(self):
+		P = self.P
+		rollup = lambda **kw: {r["bin_code"]: r for r in console_api.get_bin_rollup(q=P, **kw)["rows"]}
+		self.assertEqual(set(rollup(site="Jangalpur")), {self.bin_j})
+		self.assertEqual(rollup(site="Jangalpur")[self.bin_j]["site"], "Jangalpur")
+		self.assertEqual(set(rollup(site="Ranihati")), {self.bin_r})
+		self.assertEqual(set(rollup(site="Pipe Division")), {self.bin_p})
+		self.assertEqual(set(rollup(site=classify.UNASSIGNED)), {self.bin_u})
+		self.assertEqual(set(rollup()), {self.bin_j, self.bin_r, self.bin_p, self.bin_u})
+		self.assertEqual(console_api.get_bin_rollup(q=P, site="Jangalpur")["total"], 1)
+
+		coils = console_api.get_bin_inventory(q=P, site="Pipe Division")
+		self.assertEqual([r["coil_barcode"] for r in coils["rows"]], [self.c_p])
+		self.assertEqual((coils["rows"][0]["site"], coils["rows"][0]["material_type"]), ("Pipe Division", "Pipes"))
+		self.assertEqual(coils["total"], 1)
+
+		master = console_api.get_bin_master(q="JPR/" + P, site="Jangalpur")
+		self.assertEqual([r["bin_code"] for r in master["rows"]], [self.bin_j])
+		self.assertEqual(master["rows"][0]["site"], "Jangalpur")
+		self.assertEqual(console_api.get_bin_master(q="JPR/" + P, site="Ranihati")["total"], 0)
+		self.assertEqual([r["bin_code"] for r in console_api.get_bin_master(q="PKL3/" + P, site=classify.UNASSIGNED)["rows"]],
+						 [self.bin_u])
+
+	def test_material_filter_on_inventory(self):
+		P = self.P
+		coils = lambda mt: {r["coil_barcode"] for r in console_api.get_bin_inventory(q=P, material_type=mt)["rows"]}
+		self.assertEqual(coils("Pipes"), {self.c_p})
+		self.assertEqual(coils("Sheet (Coil)"), {self.c_j, self.c_r})
+		self.assertEqual(coils(classify.UNASSIGNED), {self.c_u})
+		self.assertEqual(console_api.get_bin_inventory(q=P, site="Ranihati", material_type="Pipes")["total"], 0)
+		d = console_api.get_dashboard(txn_type="inventory", site="Pipe Division", material_type="Pipes")
+		self.assertGreaterEqual(d["inventory"]["coils"], 1)
+		self.assertEqual(console_api.get_dashboard(txn_type="inventory", site="Ranihati", material_type="Pipes")
+						 ["inventory"]["coils"], 0)
+
+	def test_transactions_resolve_site_and_material_without_bin_or_product(self):
+		P = self.P
+		rows = lambda **kw: {r["name"] for r in console_api.get_coil_transactions(q=P, **kw)["rows"]}
+		self.assertEqual(rows(site="Pipe Division"), {self.t_count})          # bin prefix
+		self.assertEqual(rows(site="Jangalpur"), {self.t_feed, self.t_rm_d, self.t_rm_r})   # feed bin; RM destination
+		self.assertEqual(rows(site="Ranihati"), set())
+		self.assertEqual(rows(material_type="Pipes"), {self.t_count})          # product borrowed from Bin Inventory
+		self.assertEqual(rows(material_type="Sheet (Coil)"), {self.t_feed, self.t_rm_d, self.t_rm_r})
+		r = console_api.get_coil_transactions(q=P, site="Pipe Division")
+		self.assertEqual((r["rows"][0]["site"], r["rows"][0]["material_type"]), ("Pipe Division", "Pipes"))
+		# the stats tiles follow the same filter
+		self.assertGreaterEqual(r["stats"]["total"], 1)
+		self.assertEqual(console_api.get_coil_transactions(q=P, site="Ranihati")["stats"]["total"],
+						 console_api._scan_stats(site="Ranihati")["total"])
+
+	def test_rm_views_honour_site(self):
+		P = self.P
+		s = console_api.get_rm_summary(site="Jangalpur")
+		self.assertIn(self.line, [r["destination"] for r in s["rows"]])
+		self.assertGreaterEqual(s["totals"]["flagged"], 1)
+		self.assertNotIn(self.line, [r["destination"] for r in console_api.get_rm_summary(site="Ranihati")["rows"]])
+		self.assertEqual([r["coil_barcode"] for r in console_api.get_rm_movement(q=P, site="Jangalpur")["rows"]], [self.c_r])
+		self.assertEqual(console_api.get_rm_movement(q=P, site="Ranihati")["total"], 0)
+		self.assertEqual(console_api.get_rm_movement(q=P, site="Jangalpur", material_type="Pipes")["total"], 0)
+
+	def test_loading_views_use_the_plant_code(self):
+		P = self.P
+		trucks = lambda site: {r["truck_number"] for r in console_api.get_trucks(q=P, site=site)}
+		self.assertEqual(trucks("Ranihati"), {f"{P}_T5100"})
+		self.assertEqual(trucks(classify.UNASSIGNED), {f"{P}_T1300", f"{P}_TNONE"})   # 1300 is unmapped on purpose
+		self.assertEqual(trucks("Jangalpur"), set())
+		self.assertEqual(trucks(None), {f"{P}_T5100", f"{P}_T1300", f"{P}_TNONE"})
+		loading = {r["truck_number"] for r in console_api.get_coil_loading(truck=P, site="Ranihati")}
+		self.assertEqual(loading, {f"{P}_T5100"})
+		self.assertEqual(console_api.get_coil_loading(truck=P, site="Jangalpur"), [])
+		self.assertEqual(console_api.get_confirmations(site="Jangalpur"), [])
+
+	def test_dashboard_groups(self):
+		d = console_api.get_dashboard(txn_type="loading")
+		self.assertIn("live", d)
+		self.assertNotIn("scans", d)
+		self.assertNotIn("rm", d)
+		self.assertEqual(d["groups"], ["loading"])
+		d = console_api.get_dashboard(txn_type="rm")
+		self.assertEqual(set(d) - {"groups", "filters"}, {"rm"})
+		d = console_api.get_dashboard()
+		for k in ("live", "throughput", "coils", "inventory", "scans", "rm"):
+			self.assertIn(k, d)
+		self.assertEqual(d["groups"], ["loading", "inventory", "rm"])
+		# RM tiles: the seeded flagged receipt at a Jangalpur line, moves on the 3rd
+		rm = console_api.get_dashboard(txn_type="rm", site="Jangalpur", date_from="2026-08-03", date_to="2026-08-03")["rm"]
+		self.assertGreaterEqual(rm["flagged"], 1)
+		self.assertGreaterEqual(rm["dispatched"], 1)
+		self.assertGreaterEqual(rm["received"], 1)
+		self.assertEqual(console_api.get_dashboard(txn_type="rm", site="Ranihati", date_from="2026-08-03",
+												   date_to="2026-08-03")["rm"]["received"], 0)
+		# the scan tiles leave RM ledger rows out (they have their own tiles)
+		scans = console_api.get_dashboard(txn_type="inventory", site="Jangalpur", date_from="2026-08-03",
+										  date_to="2026-08-03")["scans"]["total"]
+		listed = console_api.get_coil_transactions(site="Jangalpur", date_from="2026-08-03",
+												   date_to="2026-08-03")["stats"]["total"]
+		self.assertEqual(listed - scans, 2)
+		# a site with no plans: loading tiles are zero, not an error
+		self.assertEqual(console_api.get_dashboard(txn_type="loading", site="Pipe Division")["live"]["open"], 0)
+
+	def test_export_header_states_the_global_filters(self):
+		import io
+
+		import openpyxl
+
+		def sheet(**kw):
+			frappe.response.clear()
+			console_api.export_view(**kw)
+			ws = openpyxl.load_workbook(io.BytesIO(frappe.response["filecontent"])).active
+			rows = [list(r) for r in ws.iter_rows(values_only=True)]
+			blank = next(i for i, r in enumerate(rows) if not any(c not in (None, "") for c in r))
+			return rows[:blank], rows[blank + 1], rows[blank + 2:]
+		pre, header, body = sheet(view="transactions", q=self.P, site="Jangalpur", material_type="Sheet (Coil)")
+		note = next(r[0] for r in pre if r and str(r[0] or "").startswith("Filters:"))
+		self.assertIn("site=Jangalpur", note)
+		self.assertIn("material=Sheet (Coil)", note)
+		self.assertIn("Site", header)
+		self.assertEqual({r[header.index("Site")] for r in body if r and r[1]}, {"Jangalpur"})
+		# a filter the view does not query on is not echoed as if it had applied
+		pre, header, _b = sheet(view="trucks", q=self.P, site="Ranihati", material_type="Pipes")
+		note = next(r[0] for r in pre if r and str(r[0] or "").startswith("Filters:"))
+		self.assertIn("site=Ranihati", note)
+		self.assertNotIn("material=", note)
+		# the dashboard export names its section and filters
+		frappe.response.clear()
+		console_api.export_dashboard(txn_type="rm", site="Jangalpur")
+		ws = openpyxl.load_workbook(io.BytesIO(frappe.response["filecontent"])).active
+		text = "\n".join(str(r[0] or "") for r in ws.iter_rows(values_only=True))
+		self.assertIn("section=RM Movement", text)
+		self.assertIn("site=Jangalpur", text)
+		self.assertNotIn("Coils in stock", text)
+
+	def test_filter_options_require_console_role(self):
+		if not frappe.db.exists("User", PLAIN_USER):
+			u = frappe.new_doc("User")
+			u.email = PLAIN_USER
+			u.first_name = "Plain"
+			u.user_type = "System User"
+			u.send_welcome_email = 0
+			u.insert(ignore_permissions=True)
+			frappe.db.commit()
+		frappe.set_user(PLAIN_USER)
+		with self.assertRaises(frappe.PermissionError):
+			console_api.get_filter_options()
+		with self.assertRaises(frappe.PermissionError):
+			console_api.get_dashboard(txn_type="rm")

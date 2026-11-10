@@ -14,3 +14,8 @@ sbx_wmslite.patches.v8_rm_placeholder_bin
 sbx_wmslite.patches.v9_coil_identity
 sbx_wmslite.patches.v10_receipt_sets_bin
 sbx_wmslite.patches.v11_bin_master_refresh
+sbx_wmslite.patches.v12_count_push
+sbx_wmslite.patches.v13_rm_push
+sbx_wmslite.patches.v14_global_filters
+sbx_wmslite.patches.v15_inventory_view
+sbx_wmslite.patches.v16_rename_import_batch

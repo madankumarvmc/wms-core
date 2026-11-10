@@ -62,7 +62,16 @@
 			</div>
 		</aside>
 		<main style="padding:24px 28px;width:100%;min-width:0;">
-			<h1 class="sb-display" id="view-title" style="margin:0 0 18px;">Dashboard</h1>
+			<div style="display:flex;align-items:center;gap:14px;margin:0 0 18px;flex-wrap:wrap;">
+				<h1 class="sb-display" id="view-title" style="margin:0;">Dashboard</h1>
+				<span style="flex:1;"></span>
+				<!-- Global filters: apply to every view and export, remembered per browser. -->
+				<div class="toolbar" id="gbar" style="margin:0;">
+					<label style="font-size:12px;color:var(--sb-muted);">Site <select id="g-site" title="Derived from the bin code prefix (WMSLite Site master); trucks via the SAP plant code"><option value="">All sites</option></select></label>
+					<label style="font-size:12px;color:var(--sb-muted);">Material <select id="g-mat" title="Derived from the product name (pipe keywords in WMSLite Settings)"><option value="">All materials</option></select></label>
+					<span id="g-na" class="sb-muted" style="font-size:12px;"></span>
+				</div>
+			</div>
 			<div id="content"></div>
 		</main>
 	</div>
@@ -78,13 +87,31 @@
 		const VIEWS = [["dashboard", "Dashboard"], ["trucks", "Trucks"], ["inventory", "Inventory"], ["binmaster", "Bin Master"], ["transactions", "Scan Transactions"], ["confirmations", "SAP Confirmations"], ["rm", "RM Movement"], ["saploading", "SAP Loading"], ["saplog", "SAP Log"], ["import", "Import"]]
 			.concat(CAN_USERS ? [["users", "Users"]] : []);
 		const GI_PILL = { "Confirmed": "done", "Pending": "open", "Held": "appr", "Sending": "prog", "Failed (Retryable)": "prog", "Failed (Business)": "canc", "Exhausted": "canc", "Not Required": "canc" };
-		const T1_PILL = { "Sent": "done", "Pending": "open", "Failed": "canc", "Not Required": "canc" };
+		const T1_PILL = { "Sent": "done", "Pending": "open", "Sending": "prog", "Failed": "canc", "Disabled": "prog", "Not Required": "canc" };
 		let state = { view: "dashboard" };
 
+		// ---- global filters (Site / Material Type; Transaction Type on the dashboard) ----
+		// Chosen once in the header, applied to every view and export, remembered per
+		// browser. api() and apiUrl() merge them into every request, so no view has to
+		// thread them by hand; an endpoint that does not declare the kwarg drops it
+		// (Frappe strips unknown kwargs), which is what "n/a on this view" means.
+		const GKEY = "wms_console_global_v1";
+		let GLOBAL = { site: "", material_type: "", txn_type: "" };
+		try { Object.assign(GLOBAL, JSON.parse(localStorage.getItem(GKEY) || "{}")); } catch (e) { /* storage blocked: defaults */ }
+		function saveGlobal() { try { localStorage.setItem(GKEY, JSON.stringify(GLOBAL)); } catch (e) { /* ignore */ } }
+		function globalArgs() {
+			const a = {};
+			if (GLOBAL.site) a.site = GLOBAL.site;
+			if (GLOBAL.material_type) a.material_type = GLOBAL.material_type;
+			return a;
+		}
+		let FILTER_OPTS = { sites: [], material_types: [], txn_types: [["", "All"]], support: {} };
+
 		async function api(method, args) {
+			const payload = Object.assign({}, globalArgs(), args || {});   // explicit args win
 			const res = await fetch("/api/method/" + method, {
 				method: "POST", headers: { "Content-Type": "application/json", "X-Frappe-CSRF-Token": CSRF },
-				body: JSON.stringify(args || {}),
+				body: JSON.stringify(payload),
 			});
 			if (!res.ok) {
 				let m = "Error " + res.status;
@@ -113,8 +140,9 @@
 		// limit), so the file always matches the filters that are showing.
 		function apiUrl(method, args) {
 			const p = new URLSearchParams();
-			Object.keys(args || {}).forEach((k) => {
-				const v = args[k];
+			const merged = Object.assign({}, globalArgs(), args || {});   // exports follow the global filters too
+			Object.keys(merged).forEach((k) => {
+				const v = merged[k];
 				if (v !== null && v !== undefined && v !== "") p.append(k, v);
 			});
 			const qs = p.toString();
@@ -155,13 +183,40 @@
 			if (b) b.onclick = () => downloadExport(b, urlFn());
 		}
 
+		// Grey out a global select the current view cannot honour, and say so.
+		function syncGlobalBar() {
+			const sup = FILTER_OPTS.support[state.view] || [];
+			const siteOk = sup.indexOf("site") >= 0, matOk = sup.indexOf("material_type") >= 0;
+			$("g-site").disabled = !siteOk; $("g-mat").disabled = !matOk;
+			$("g-na").textContent = (!siteOk && !matOk) ? "Site and material: n/a on this view"
+				: (!matOk ? "Material: n/a on this view" : (!siteOk ? "Site: n/a on this view" : ""));
+		}
+		async function loadFilterOptions() {
+			try { FILTER_OPTS = await api("sbx_wmslite.console_api.get_filter_options"); } catch (e) { /* bar stays empty */ }
+			const fill = (id, vals, cur) => {
+				const sel = $(id);
+				const first = sel.options[0].outerHTML;
+				sel.innerHTML = first + vals.map(v => '<option value="' + esc(v) + '">' + esc(v) + '</option>').join("");
+				sel.value = vals.indexOf(cur) >= 0 ? cur : "";
+			};
+			fill("g-site", FILTER_OPTS.sites || [], GLOBAL.site);
+			fill("g-mat", FILTER_OPTS.material_types || [], GLOBAL.material_type);
+			GLOBAL.site = $("g-site").value; GLOBAL.material_type = $("g-mat").value;   // a remembered value the master no longer has
+			const onchange = () => {
+				GLOBAL.site = $("g-site").value; GLOBAL.material_type = $("g-mat").value; saveGlobal();
+				INV.start = 0; BM.start = 0; TXN.start = 0;   // an offset past the new filtered total would show an empty page
+				render();
+			};
+			$("g-site").onchange = onchange; $("g-mat").onchange = onchange;
+		}
+
 		function renderNav() {
 			$("nav").innerHTML = VIEWS.map(([k, label]) =>
 				'<a class="nav-item" data-v="' + k + '" style="display:block;padding:9px 12px;border-radius:8px;color:#fff;text-decoration:none;margin-bottom:3px;' +
 				(state.view === k ? "background:var(--sb-orange);font-weight:700;" : "opacity:.85;") + '">' + label + '</a>').join("");
 			document.querySelectorAll(".nav-item").forEach((a) => a.onclick = () => navigate(a.dataset.v));
 		}
-		function navigate(v) { state.view = v; renderNav(); $("view-title").textContent = VIEWS.find(x => x[0] === v)[1]; render(); }
+		function navigate(v) { state.view = v; renderNav(); $("view-title").textContent = VIEWS.find(x => x[0] === v)[1]; syncGlobalBar(); render(); }
 
 		async function render() {
 			const c = $("content"); c.innerHTML = '<p class="sb-muted">Loading…</p>';
@@ -181,49 +236,77 @@
 		}
 
 		// ---------- dashboard ----------
+		// Sections are grouped by the "Transaction Type" selector (Loading (Outbound) /
+		// Inventory scanning / RM Movement); the server computes only the group that
+		// is asked for, and only the sections present in the reply are shown.
 		async function renderDashboard(c) {
 			const r = state.dashRange || defaultRange();
+			const rangeSpan = (id) => '<span id="' + id + '" class="sb-muted" style="font-weight:400;text-transform:none;letter-spacing:0;"></span>';
+			const seg = '<div class="seg" id="db-seg" title="Transaction type">' + FILTER_OPTS.txn_types.map(([k, l]) =>
+				'<button data-tt="' + esc(k) + '" class="' + (GLOBAL.txn_type === k ? "on" : "") + '">' + esc(l) + '</button>').join("") + '</div>';
 			c.innerHTML =
-				'<div class="toolbar">' + dateControls("db", r) + '<span style="flex:1;"></span>' + exportBtn("db-x") + '</div>' +
-				'<div class="sb-label" style="margin:2px 0 6px;">Now</div>' +
+				'<div class="toolbar">' + seg + dateControls("db", r) + '<span style="flex:1;"></span>' + exportBtn("db-x") + '</div>' +
+				'<div id="db-loading">' +
+				'<div class="sb-label" style="margin:2px 0 6px;">Loading (Outbound) — now</div>' +
 				'<div class="kpis" id="db-live"></div>' +
-				'<div class="sb-label" style="margin:16px 0 6px;">Throughput <span id="db-range" class="sb-muted" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>' +
-				'<div class="kpis" id="db-thru"></div>' +
+				'<div class="sb-label" style="margin:16px 0 6px;">Loading throughput ' + rangeSpan("db-range") + '</div>' +
+				'<div class="kpis" id="db-thru"></div></div>' +
+				'<div id="db-inventory">' +
 				'<div class="sb-label" style="margin:16px 0 6px;">Inventory on hand</div>' +
 				'<div class="kpis" id="db-inv"></div>' +
-				'<div class="sb-label" style="margin:16px 0 6px;">Scan activity <span id="db-range2" class="sb-muted" style="font-weight:400;text-transform:none;letter-spacing:0;"></span></div>' +
+				'<div class="sb-label" style="margin:16px 0 6px;">Inventory scanning ' + rangeSpan("db-range2") + '</div>' +
 				'<div class="kpis" id="db-scans"></div>' +
-				'<div id="db-scanfoot" class="sb-muted" style="font-size:12px;margin-top:6px;"></div>' +
+				'<div id="db-scanfoot" class="sb-muted" style="font-size:12px;margin-top:6px;"></div></div>' +
+				'<div id="db-rmsec">' +
+				'<div class="sb-label" style="margin:16px 0 6px;">RM Movement ' + rangeSpan("db-range3") + '</div>' +
+				'<div class="kpis" id="db-rm"></div></div>' +
 				'<div class="sb-card" id="db-overall" style="padding:18px;margin-top:18px;"></div>';
 			const load = async () => {
 				const ra = rangeArgs("db");
 				state.dashRange = { from: ra.date_from || "", to: ra.date_to || "" };
-				const d = await api("sbx_wmslite.console_api.get_dashboard", ra);
-				$("db-live").innerHTML =
-					kpi(d.live.open, "Open / Active", true) + kpi(d.live.pending_approval, "Awaiting Approval") +
-					kpi(d.live.gi_awaiting_release, "GI Awaiting Release") + kpi(d.live.gi_failed, "GI Failed");
+				const d = await api("sbx_wmslite.console_api.get_dashboard", Object.assign({ txn_type: GLOBAL.txn_type }, ra));
 				const rangeLabel = (ra.date_from && ra.date_to) ? ("· " + ra.date_from + " → " + ra.date_to) : "· all time";
-				$("db-range").textContent = rangeLabel;
-				$("db-range2").textContent = rangeLabel;
-				$("db-thru").innerHTML =
-					kpi(d.throughput.completed, "Completed") + kpi(d.throughput.coils_loaded, "Coils Loaded") + kpi(d.throughput.rejects, "Rejects");
-				// inventory is deliberately NOT range-scoped — stock on hand is "now"
-				$("db-inv").innerHTML =
-					kpi(fmt(d.inventory.coils), "Coils in Stock", true) + kpi(fmt(d.inventory.bins), "Bins Occupied") +
-					kpi(fmt(Math.round(d.inventory.weight)), "Total Weight") + kpi(fmt(d.inventory.picked), "Picked");
-				$("db-scans").innerHTML =
-					kpi(fmt(d.scans.total), "Scans") + kpi(fmt(d.scans.sap_feed), "From SAP Feed") +
-					kpi(fmt(d.scans.in_app), "Inventory Count") + kpi(fmt(d.scans.coils), "Coils Touched");
-				$("db-scanfoot").innerHTML =
-					(d.scans.last_scan ? "Last scan " + esc(d.scans.last_scan.slice(0, 19)) : "No scans in range") +
-					(d.scans.unprocessed ? ' · <b style="color:#a23b2e;">' + d.scans.unprocessed + ' unprocessed</b> — open Transactions to derive them' : " · all scans derived");
-				$("db-overall").innerHTML =
-					'<div class="sb-label">Overall coil progress' + ((ra.date_from && ra.date_to) ? " (plans received in range)" : "") + '</div>' +
-					'<div class="bar"><i style="width:' + d.coils.progress_pct + '%"></i></div>' +
-					'<p class="sb-muted" style="margin-top:8px;">' + d.coils.loaded + ' loaded · ' + d.coils.skipped + ' skipped · ' + d.coils.pending + ' pending</p>';
+				const show = (id, on) => { $(id).style.display = on ? "" : "none"; };
+				show("db-loading", !!d.live); show("db-overall", !!d.coils);
+				show("db-inventory", !!d.inventory); show("db-rmsec", !!d.rm);
+				if (d.live) {
+					$("db-live").innerHTML =
+						kpi(d.live.open, "Open / Active", true) + kpi(d.live.pending_approval, "Awaiting Approval") +
+						kpi(d.live.gi_awaiting_release, "GI Awaiting Release") + kpi(d.live.gi_failed, "GI Failed");
+					$("db-range").textContent = rangeLabel;
+					$("db-thru").innerHTML =
+						kpi(d.throughput.completed, "Completed") + kpi(d.throughput.coils_loaded, "Coils Loaded") + kpi(d.throughput.rejects, "Rejects");
+					$("db-overall").innerHTML =
+						'<div class="sb-label">Overall coil progress' + ((ra.date_from && ra.date_to) ? " (plans received in range)" : "") + '</div>' +
+						'<div class="bar"><i style="width:' + d.coils.progress_pct + '%"></i></div>' +
+						'<p class="sb-muted" style="margin-top:8px;">' + d.coils.loaded + ' loaded · ' + d.coils.skipped + ' skipped · ' + d.coils.pending + ' pending</p>';
+				}
+				if (d.inventory) {
+					// inventory is deliberately NOT range-scoped — stock on hand is "now"
+					$("db-inv").innerHTML =
+						kpi(fmt(d.inventory.coils), "Coils in Stock", true) + kpi(fmt(d.inventory.bins), "Bins Occupied") +
+						kpi(fmt(Math.round(d.inventory.weight)), "Total Weight") + kpi(fmt(d.inventory.picked), "Picked");
+					$("db-range2").textContent = rangeLabel;
+					$("db-scans").innerHTML =
+						kpi(fmt(d.scans.total), "Scans") + kpi(fmt(d.scans.sap_feed), "From SAP Feed") +
+						kpi(fmt(d.scans.in_app), "Inventory Count") + kpi(fmt(d.scans.coils), "Coils Touched");
+					$("db-scanfoot").innerHTML =
+						(d.scans.last_scan ? "Last scan " + esc(d.scans.last_scan.slice(0, 19)) : "No scans in range") +
+						(d.scans.unprocessed ? ' · <b style="color:#a23b2e;">' + d.scans.unprocessed + ' unprocessed</b> — open Transactions to derive them' : " · all scans derived");
+				}
+				if (d.rm) {
+					$("db-range3").textContent = rangeLabel;
+					$("db-rm").innerHTML =
+						kpi(fmt(d.rm.in_transit), "In Transit (now)", true) + kpi(fmt(d.rm.lines_active), "Lines Active (now)") +
+						kpi(fmt(d.rm.stale_lines), "Ageing ≥ " + d.rm.stale_hours + "h (now)") + kpi(fmt(d.rm.flagged), "Flagged Receipts (now)") +
+						kpi(fmt(d.rm.dispatched), "Dispatched") + kpi(fmt(d.rm.received), "Received");
+				}
 			};
+			$("db-seg").querySelectorAll("button").forEach(b => {
+				b.onclick = () => { GLOBAL.txn_type = b.dataset.tt; saveGlobal(); renderDashboard(c); };
+			});
 			$("db-from").onchange = load; $("db-to").onchange = load;
-			onExport("db-x", () => apiUrl("sbx_wmslite.console_api.export_dashboard", rangeArgs("db")));
+			onExport("db-x", () => apiUrl("sbx_wmslite.console_api.export_dashboard", Object.assign({ txn_type: GLOBAL.txn_type }, rangeArgs("db"))));
 			$("db-clear").onclick = () => { $("db-from").value = ""; $("db-to").value = ""; load(); };
 			load();
 		}
@@ -534,11 +617,11 @@
 				busy("bi-table", "bi-pg");
 				const d = await api("sbx_wmslite.console_api.get_bin_rollup", { q: $("bi-q").value, start: INV.start });
 				if (mine !== seq) return;
-				$("bi-table").innerHTML = '<table class="grid"><thead><tr><th>Bin</th><th>Coils</th><th>Weight</th><th>Picked</th><th>Last Updated</th><th></th></tr></thead><tbody>' +
-					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td>' + fmt(r.coils) + '</td><td>' + fmt(Math.round(r.weight || 0)) +
+				$("bi-table").innerHTML = '<table class="grid"><thead><tr><th>Bin</th><th>Site</th><th>Coils</th><th>Weight</th><th>Picked</th><th>Last Updated</th><th></th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td class="sb-muted">' + esc(r.site || "") + '</td><td>' + fmt(r.coils) + '</td><td>' + fmt(Math.round(r.weight || 0)) +
 						'</td><td>' + fmt(r.picked || 0) + '</td><td class="sb-muted">' + esc((r.last_updated || "").slice(0, 19)) +
 						'</td><td><button class="sb-btn sb-btn--ghost sb-btn--inline" data-bin="' + esc(r.bin_code) + '">View coils</button></td></tr>').join("") :
-						'<tr><td colspan="6" class="sb-muted">No bin inventory yet — push it or import via the Import tab.</td></tr>') + '</tbody></table>';
+						'<tr><td colspan="7" class="sb-muted">No bin inventory yet — push it or import via the Import tab.</td></tr>') + '</tbody></table>';
 				pager("bi-pg", d, (s) => { INV.start = s; loadBins(); });
 				$("bi-table").querySelectorAll("button[data-bin]").forEach(b => { b.onclick = () => binDrawer(b.dataset.bin); });
 			};
@@ -549,11 +632,19 @@
 				const d = await api("sbx_wmslite.console_api.get_bin_inventory",
 					{ q: $("bi-q").value, status: $("bi-status").value, start: INV.start });
 				if (mine !== seq) return;
-				$("bi-table").innerHTML = '<table class="grid"><thead><tr><th>Bin</th><th>Coil</th><th>Grade</th><th>Weight</th><th>Status</th><th>Source</th><th>Updated</th></tr></thead><tbody>' +
-					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td>' + esc(r.coil_barcode) + '</td><td>' + esc(r.material_grade || "") +
-						'</td><td>' + (r.weight || "") + '</td><td>' + esc(r.status || "") +
+				// Weight (MT) is read off the coil's QR label server-side; the tooltip says
+				// whether it came from the QR or the stored (SAP feed) weight.
+				const wt = (r) => (r.weight || r.weight === 0) && Number(r.weight)
+					? '<td style="text-align:right;" title="' + esc(r.weight_source === "QR" ? "From the QR label" : "Stored weight (no QR scanned)") + '">' + Number(r.weight).toFixed(3) + '</td>'
+					: '<td class="sb-muted" style="text-align:right;">—</td>';
+				// Size: the 4th '-' part of the QR label, else the size SAP stored.
+				const sz = (r) => r.size
+					? '<td style="white-space:nowrap;" title="' + esc(r.size_source === "QR" ? "From the QR label" : "Stored size (no QR scanned)") + '">' + esc(r.size) + '</td>'
+					: '<td class="sb-muted">—</td>';
+				$("bi-table").innerHTML = '<table class="grid"><thead><tr><th>Bin</th><th>Coil</th><th>Site</th><th style="text-align:right;">Weight (MT)</th><th>Size</th><th>Status</th><th>Source</th><th>Updated</th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td>' + esc(r.coil_barcode) + '</td><td class="sb-muted">' + esc(r.site || "") + '</td>' + wt(r) + sz(r) + '<td>' + esc(r.status || "") +
 						'</td><td class="sb-muted">' + esc(r.source || "") + '</td><td class="sb-muted">' + esc((r.updated_at || "").slice(0, 19)) + '</td></tr>').join("") :
-						'<tr><td colspan="7" class="sb-muted">No coils match.</td></tr>') + '</tbody></table>';
+						'<tr><td colspan="8" class="sb-muted">No coils match.</td></tr>') + '</tbody></table>';
 				pager("bi-pg", d, (s) => { INV.start = s; loadCoils(); });
 			};
 
@@ -600,12 +691,12 @@
 				const d = await api("sbx_wmslite.console_api.get_bin_master",
 					{ q: BM.q, disabled: BM.disabled, start: BM.start });
 				if (mine !== seq) return;
-				$("bm-table").innerHTML = '<table class="grid"><thead><tr><th>Bin Code</th><th>Zone</th><th>Aisle</th><th>Line</th><th>Status</th><th>Source</th></tr></thead><tbody>' +
-					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td>' + esc(r.zone || "") + '</td><td>' + esc(r.aisle || "") +
+				$("bm-table").innerHTML = '<table class="grid"><thead><tr><th>Bin Code</th><th>Site</th><th>Zone</th><th>Aisle</th><th>Line</th><th>Status</th><th>Source</th></tr></thead><tbody>' +
+					(d.rows.length ? d.rows.map(r => '<tr><td><b>' + esc(r.bin_code) + '</b></td><td class="sb-muted">' + esc(r.site || "") + '</td><td>' + esc(r.zone || "") + '</td><td>' + esc(r.aisle || "") +
 						'</td><td>' + (r.is_line ? "Yes" : "") +
 						'</td><td>' + (r.disabled ? '<span class="pill canc">Disabled</span>' : '<span class="pill done">Active</span>') +
 						'</td><td class="sb-muted">' + esc(r.source || "") + '</td></tr>').join("") :
-						'<tr><td colspan="6" class="sb-muted">No locations match.</td></tr>') + '</tbody></table>';
+						'<tr><td colspan="7" class="sb-muted">No locations match.</td></tr>') + '</tbody></table>';
 				pager("bm-pg", d, (s) => { BM.start = s; load(); });
 			};
 
@@ -663,16 +754,28 @@
 				$("tx-kpis").innerHTML =
 					kpi(fmt(d.stats.total), "Scans in Range", true) + kpi(fmt(d.stats.sap_feed), "From SAP Feed") +
 					kpi(fmt(d.stats.in_app), "Inventory Count") + kpi(fmt(d.stats.unprocessed), "Unprocessed");
-				$("tx-table").innerHTML = '<table class="grid"><thead><tr><th>Scanned At</th><th>Coil</th><th>Bin</th><th>Type</th><th>Source</th><th>By</th><th>Weight</th><th>QC</th><th></th></tr></thead><tbody>' +
+				// SAP column: in-app Inventory Count scans (T1, LOCATION = bin) and RM line
+				// receipts (T2, LOCATION = line) are pushed; feed / dispatch / reversal rows
+				// have no sap_status and show "—". Retry re-arms a Failed push of either kind.
+				const sapCell = (r) => {
+					if (!r.sap_status) return '<td class="sb-muted">—</td>';
+					const retry = (r.sap_status === "Failed" && !r.reversed)
+						? ' <button class="sb-btn sb-btn--orange sb-btn--inline" style="padding:5px 10px;font-size:12px;" data-cretry="' + esc(r.name) + '">Retry</button>' : "";
+					return '<td style="white-space:nowrap;"><span class="pill ' + (T1_PILL[r.sap_status] || "canc") + '" title="' + esc(r.sap_message || "") + '">' + esc(r.sap_status) + '</span>' + retry + '</td>';
+				};
+				$("tx-table").innerHTML = '<table class="grid"><thead><tr><th>Scanned At</th><th>Coil</th><th>Bin</th><th>Site</th><th>Type</th><th>Source</th><th>By</th><th>Weight</th><th>QC</th><th>SAP</th><th></th></tr></thead><tbody>' +
 					(d.rows.length ? d.rows.map(r => '<tr class="click" data-txn="' + esc(r.name) + '">' +
 						'<td>' + esc((r.scanned_at || "").slice(0, 19)) + '</td><td><b>' + esc(r.coil_barcode || "") + '</b></td>' +
-						'<td>' + esc(r.bin_code || "—") + '</td><td>' + esc(r.transaction_type || "—") + '</td>' +
+						'<td>' + esc(r.bin_code || "—") + '</td><td class="sb-muted">' + esc(r.site || "") + '</td><td>' + esc(r.transaction_type || "—") + (r.reversed ? ' <span class="pill canc" title="Removed on the handheld after scanning">undone</span>' : "") + '</td>' +
 						'<td class="sb-muted">' + esc(r.source || "") + '</td><td class="sb-muted">' + esc(r.username || "—") + '</td>' +
-						'<td>' + (r.weight || "") + '</td><td>' + esc(r.qc || "—") + '</td>' +
+						'<td>' + (r.weight || "") + '</td><td>' + esc(r.qc || "—") + '</td>' + sapCell(r) +
 						'<td class="sb-muted">' + (r.processed ? "" : "pending") + '</td></tr>').join("") :
-						'<tr><td colspan="9" class="sb-muted">No scans in this range. Widen the dates or clear the filters.</td></tr>') + '</tbody></table>';
+						'<tr><td colspan="11" class="sb-muted">No scans in this range. Widen the dates or clear the filters.</td></tr>') + '</tbody></table>';
 				pager("tx-pg", d, (s) => { TXN.start = s; load(); });
 				$("tx-table").querySelectorAll("tr[data-txn]").forEach(tr => { tr.onclick = () => txnDrawer(tr.dataset.txn); });
+				$("tx-table").querySelectorAll("[data-cretry]").forEach(b => b.onclick = async (ev) => {
+					ev.stopPropagation();   // the row click opens the drawer
+					try { await api("sbx_wmslite.console_api.retry_sap_push", { txn: b.dataset.cretry }); load(); } catch (e) { alert(e.message); } });
 			};
 
 			$("tx-seg").querySelectorAll("button").forEach(b => {
@@ -714,9 +817,14 @@
 				row("Plant / Product", [d.plant, d.product].filter(Boolean).join(" / ")) +
 				row("Derived", d.processed ? ("yes · " + String(d.processed_at || "").slice(0, 19)) : "not yet") +
 				row("Bin Inventory", d.bin_inventory) + row("Idempotency key", d.txn_key) +
+				(d.reversed ? row("Undone", "yes · " + (d.reversed_by || "") + " · " + String(d.reversed_at || "").slice(0, 19)) : "") +
+				(d.sap_status ? row("SAP status", d.sap_status + (d.sap_attempts ? " · " + d.sap_attempts + " attempt(s)" : "")) +
+					row("SAP message", d.sap_message) + row("SAP last attempt", String(d.sap_pushed_at || "").slice(0, 19)) : "") +
 				'</tbody></table>' +
 				(raw ? '<div class="sb-label" style="margin:16px 0 6px;">Raw payload</div>' +
 					'<pre style="background:#f5f5f6;border:1px solid var(--sb-line);border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:320px;">' + esc(raw) + '</pre>' : "") +
+				(d.sap_request ? '<div class="sb-label" style="margin:16px 0 6px;">Sent to SAP (T1)</div>' +
+					'<pre style="background:#f5f5f6;border:1px solid var(--sb-line);border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:320px;">' + esc(d.sap_request) + '</pre>' : "") +
 				'<div class="row" style="display:flex;gap:8px;margin-top:18px;"><button class="sb-btn sb-btn--ghost sb-btn--inline" onclick="closeDrawer()">Close</button></div>');
 		}
 
@@ -725,8 +833,8 @@
 			const d = await api("sbx_wmslite.console_api.get_bin_inventory", { bin_code: bin, limit: 200 });
 			openDrawer('<h2 class="sb-h1" style="margin:0 0 4px;">' + esc(bin) + '</h2>' +
 				'<p class="sb-muted">' + fmt(d.total) + ' coil(s) in this bin</p>' +
-				'<table class="grid" style="margin-top:12px;"><thead><tr><th>Coil</th><th>Grade</th><th>Weight</th><th>Zone/Aisle</th><th>Status</th><th>Updated</th></tr></thead><tbody>' +
-				d.rows.map(r => '<tr><td><b>' + esc(r.coil_barcode) + '</b></td><td>' + esc(r.material_grade || "") + '</td><td>' + (r.weight || "") +
+				'<table class="grid" style="margin-top:12px;"><thead><tr><th>Coil</th><th>Grade</th><th>Weight (MT)</th><th>Zone/Aisle</th><th>Status</th><th>Updated</th></tr></thead><tbody>' +
+				d.rows.map(r => '<tr><td><b>' + esc(r.coil_barcode) + '</b></td><td>' + esc(r.material_grade || "") + '</td><td>' + (Number(r.weight) ? Number(r.weight).toFixed(3) : "—") +
 					'</td><td>' + esc([r.zone, r.aisle].filter(Boolean).join(" / ") || "—") + '</td><td>' + esc(r.status || "") +
 					'</td><td class="sb-muted">' + esc((r.updated_at || "").slice(0, 19)) + '</td></tr>').join("") +
 				'</tbody></table>' +
@@ -948,7 +1056,7 @@
 			window.location.href = "/login";
 		};
 
-		renderNav(); render();
+		loadFilterOptions().then(() => { renderNav(); syncGlobalBar(); render(); });
 	</script>
 </body>
 </html>

@@ -55,8 +55,10 @@ _EXTRA_TESTS = (
 def extract_inventory_batch(raw: str) -> str:
 	"""The batch code inside a descriptive inventory QR.
 
-	Split on "-", trim, then:
-	  1. >=5 segments and segment-2 ends "OEM"        -> "seg3-seg4"
+	Split on "-", trim each segment (collapsing runs of spaces, as AppSheet's
+	TRIM does — the QR prints "mm  X" with two spaces), then:
+	  1. >=5 segments, segment-2 ends "OEM" AND segment-4 is a short suffix
+	     (<=3 chars, e.g. "464-C" corrugated sheet)   -> "seg3-seg4"
 	  2. segment-3 is a product/extra code            -> seg4
 	  3. Jangalpur plant and segment-3 has no digit   -> "seg3-seg4"
 	  4. otherwise                                    -> seg3
@@ -70,7 +72,7 @@ def extract_inventory_batch(raw: str) -> str:
 	s = (raw or "").strip()
 	if not s:
 		return ""
-	parts = [p.strip() for p in s.split("-")]
+	parts = [re.sub(r"\s+", " ", p.strip()) for p in s.split("-")]
 	n = len(parts)
 
 	def at(i):
@@ -78,7 +80,12 @@ def extract_inventory_batch(raw: str) -> str:
 
 	p1, p2, p3, p4 = at(1), at(2), at(3), at(4)
 
-	if n >= 5 and p2.upper()[-3:] == "OEM":
+	# The suffix guard is what keeps "PPGL Coil OEM-1R6I31513 - 1.000 mm X 914 X
+	# 617 Mtr. - ..." from becoming "1R6I31513-1.000 mm X 914 X 617 Mtr.": there
+	# segment-4 is the size, not part of the batch. SAP truncates BATCH to 10
+	# chars, so that glued identity was being recorded in SAP as "1R6I31513-".
+	# Mirrors the AppSheet formula's LEN(TRIM(INDEX(..., 4))) <= 3 (2026-10-02).
+	if n >= 5 and p2.upper()[-3:] == "OEM" and len(p4) <= 3:
 		return f"{p3}-{p4}"
 	if n >= 3:
 		upper = p3.upper()
@@ -120,3 +127,49 @@ def decode_coil_id(raw: str) -> str:
 def decode_bin_code(raw: str) -> str:
 	"""Return the bin code extracted from a raw scanned bin QR string."""
 	return _decode(raw, "bin_decode_rule", "bin_decode_regex", "WMSLite bin decode")
+
+
+# The weight printed on a plant QR: "... - 2.800 MT- GCS0300", "... - 2.804 TO-",
+# "...- X-3410.000 KG". Found by its unit, not by '-' position: the label layouts
+# differ in segment count (plant prefix, extra codes, Jangalpur's
+# "PGI0550120S/C" second segment), and a positional read lands on the size there.
+# The size ("0.300 mm X 800 X 1830 mm") has no MT/TO/KG unit, so it never matches.
+_QR_WEIGHT = re.compile(r"(\d+(?:\.\d+)?)\s*(MT|TO|KG)\b", re.IGNORECASE)
+
+
+def qr_weight_mt(raw):
+	"""Weight in metric tonnes read from a coil QR string, or None.
+
+	MT and TO (tonnes) are taken as printed; KG is converted (/1000). The LAST
+	weight token wins, as the weight is the last measured field on every label.
+	A plain barcode (no unit token) returns None so callers fall back to the
+	stored weight.
+	"""
+	matches = _QR_WEIGHT.findall(raw or "")
+	if not matches:
+		return None
+	value, unit = matches[-1]
+	w = float(value)
+	return round(w / 1000.0, 6) if unit.upper() == "KG" else w
+
+
+def qr_size(raw):
+	"""The size printed on a coil QR label, or None.
+
+	Positional, by owner decision (2026-11-03): split the label on every '-',
+	trim each part and collapse inner spaces; the size is the FOURTH part.
+	Written for the standard label
+
+		5100 - PPGL Coil-1R6K34563 - 0.500 mm  X 1220 X 1041 Mtr. - 4.220 MT- PGL0500070S/RGW
+		[1]    [2]       [3]         [4] = "0.500 mm X 1220 X 1041 Mtr."
+
+	and applied to every label regardless: a layout with an extra '-' before the
+	size ("... PGL Coil FG -P1B-1R4G21195 - ...") returns the wrong part. That is
+	accepted (116 of 18,660 QRs on the client's site). Fewer than four parts —
+	a plain barcode — returns None so callers fall back to the stored size.
+	"""
+	parts = [re.sub(r"\s+", " ", p).strip() for p in (raw or "").split("-")]
+	if len(parts) < 4:
+		return None
+	return parts[3] or None
+

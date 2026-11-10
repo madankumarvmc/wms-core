@@ -82,12 +82,14 @@
 			<a href="#loading-short">3.5 Short-load</a>
 			<a href="#loading-offline">3.6 Offline</a>
 			<a href="#count">4 · Inventory Count</a>
+			<a href="#inventory">4.1 Inventory lookup</a>
 			<a href="#rm">5 · RM Movement</a>
 			<a href="#rm-gate">5.1 Gate Dispatch</a>
 			<a href="#rm-line">5.2 Line Receipt</a>
 			<a href="#rm-rules">5.3 Rules &amp; offline</a>
 			<div class="grp">Supervisor console</div>
 			<a href="#console">6 · Console</a>
+			<a href="#console-filters">6.0 Global filters</a>
 			<a href="#console-dash">6.1 Dashboard</a>
 			<a href="#console-trucks">6.2 Trucks</a>
 			<a href="#console-inv">6.3 Inventory</a>
@@ -102,9 +104,9 @@
 		<main>
 			<h1 class="title">WMS Core — User Manual</h1>
 			<p class="lead">WMS Core is the handheld (phone/scanner) app and supervisor console for
-			truck loading and bin inventory. This guide covers the four handheld tasks —
-			<b>Loading</b>, <b>Inventory Count</b>, <b>Gate Dispatch</b> and <b>Line Receipt</b> — and the
-			<b>Supervisor Console</b>.</p>
+			truck loading and bin inventory. This guide covers the five handheld tasks —
+			<b>Loading</b>, <b>Inventory Count</b>, <b>Gate Dispatch</b>, <b>Line Receipt</b> and the read-only
+			<b>Inventory</b> lookup — and the <b>Supervisor Console</b>.</p>
 
 			<!-- ============ 1 OVERVIEW ============ -->
 			<h2 id="overview">1 · Overview</h2>
@@ -115,13 +117,14 @@
 				<div class="role"><b>🖥️ Supervisor console</b><p style="margin:.4em 0 0;font-size:14px;">Opens at <code>/wms-console</code> on a
 					desktop. Supervisors track trucks, review SAP sync, and import data.</p></div>
 			</div>
-			<p>The handheld has four <b>tasks</b>. You only see the ones your role allows:</p>
+			<p>The handheld has five <b>tasks</b>. You only see the ones your role allows:</p>
 			<table class="kv">
 				<tr><th>Your role</th><th>What you see</th></tr>
 				<tr><td>Loading Operator</td><td>Loading</td></tr>
 				<tr><td>Inventory Recorder</td><td>Inventory Count</td></tr>
 				<tr><td>RM Gate Operator</td><td>Gate Dispatch</td></tr>
 				<tr><td>RM Line Operator</td><td>Line Receipt</td></tr>
+				<tr><td>Any of the above</td><td>Inventory — look up coils by bin or barcode (read only)</td></tr>
 				<tr><td>Loading Supervisor / more than one role</td><td>A task picker to choose between them</td></tr>
 			</table>
 			<div class="callout">One task only? The app opens straight into it — no picker.</div>
@@ -145,7 +148,7 @@
 			remembers your choice next time (switch anytime with <b>⇄ Task</b>). You only ever see the
 			tiles your role allows.</p>
 			<figure class="phone"><img src="/assets/sbx_wmslite/manual/01-task-picker.png" alt="Task picker" />
-				<figcaption>The task picker — shown here for a user who can do all four tasks.</figcaption></figure>
+				<figcaption>The task picker — shown here for a user who can do every task.</figcaption></figure>
 
 			<!-- ============ 3 LOADING ============ -->
 			<h2 id="loading">3 · Loading a truck</h2>
@@ -232,6 +235,23 @@
 			<div class="callout">Inventory Count works offline too — scans queue and sync just like loading.
 			Reopening a bin shows the coils already recorded in it.</div>
 
+			<h3 id="inventory">4.1 Inventory lookup</h3>
+			<p>The <b>Inventory</b> card is a read-only window onto what the warehouse knows: every coil with the bin
+			it is in, listed by location, 20 at a time. Tap <b>Show more</b> for the next 20. Nothing you do here
+			changes any record.</p>
+			<p>The one box takes <b>either</b> kind of barcode:</p>
+			<ul>
+				<li><b>Scan or type a bin</b> — the list becomes every coil in that bin, with the count in the header.</li>
+				<li><b>Scan or type a coil</b> (the full label or just its batch code) — the list becomes that one coil,
+				with the bin it is in. If it has been sent to a production line, the row says so.</li>
+				<li><b>Type part of a code</b> — anything that is not a known bin or coil is treated as "starts with",
+				so <code>CCL3/A1</code> lists the coils in every bin beginning with that, and <code>3R6J15</code> lists
+				the coils whose barcode begins with that.</li>
+				<li><b>Clear</b> in the header goes back to the full list.</li>
+			</ul>
+			<div class="callout warn">Inventory lookup needs a connection — it reads live data and has nothing to queue.
+			Offline, the box tells you so and shows nothing.</div>
+
 			<!-- ============ 5 RM MOVEMENT ============ -->
 			<h2 id="rm">5 · RM Movement</h2>
 			<p>RM Movement moves raw-material coils from the <b>plant gate</b> to a <b>production line</b>.
@@ -316,8 +336,37 @@
 			<p>The console (<code>/wms-console</code>, desktop) is for Loading Supervisors. The left menu
 			switches between views.</p>
 
+			<h3 id="console-filters">6.0 Global filters — Site and Material</h3>
+			<p>Two dropdowns in the header, <b>Site</b> and <b>Material</b>, apply to every view and to every
+			Excel download, and are remembered on this browser. They narrow what the view shows; they do not
+			change the data.</p>
+			<table class="kv">
+				<tr><th>Filter</th><th>How a row gets its value</th></tr>
+				<tr><td>Site</td><td>From the <b>bin code prefix</b> — the leading letters/digits of the location
+					(<code>JPR/KMILL/H2</code> → JPR → Jangalpur; <code>CCL3/A9</code> → CCL3 → Ranihati;
+					<code>RP/NFS/1</code> → RP → Pipe Division). A coil takes the site of the bin it is in; an RM scan
+					takes the site of its line. <b>Trucks</b> have no bin, so they take the site of their SAP plant code.
+					The prefix and plant-code lists live in the <b>WMSLite Site</b> master (Desk → WMSLite Site).</td></tr>
+				<tr><td>Material</td><td>From the <b>product name</b> the SAP feed sent for the coil: a product containing
+					a pipe keyword (<code>PIPE</code>, <code>TUBE</code> — editable in WMSLite Settings → Console Filters)
+					is <b>Pipes</b>; any other product is <b>Sheet (Coil)</b>. Handheld scans carry no product and use
+					their coil's inventory record.</td></tr>
+				<tr><td>Unassigned</td><td>A bin whose prefix is in no site, a truck whose plant code is in no site, or a
+					coil with no product. Pick it to see what still needs mapping; add the prefix or plant code to a site
+					to fix it — no deploy needed. Bin Master and Inventory reflect the change at once; Scan Transactions
+					re-classify in the background within a few minutes.</td></tr>
+				<tr><td>n/a</td><td>A greyed-out dropdown means the view cannot honour it: Material never applies to
+					truck views (SAP sends no product with a loading plan), and the SAP Log, Import and Users views use
+					neither.</td></tr>
+			</table>
+
 			<h3 id="console-dash">6.1 Dashboard</h3>
-			<p>Live counts (open/active trucks, awaiting approval, GI status) and throughput over a date range.</p>
+			<p>Tiles in three groups, chosen with the <b>Transaction type</b> toggle: <b>Loading (Outbound)</b>
+			(live truck state, throughput and coil progress over the date range), <b>Inventory scanning</b> (stock on
+			hand now, and scan activity over the range — SAP feed plus handheld Inventory Count scans; RM moves are
+			not counted here) and <b>RM Movement</b> (in transit, lines active, ageing and flagged receipts now; coils
+			dispatched and received over the range). <b>All</b> shows every group. The global Site / Material filters
+			apply to every tile, and the Excel download carries exactly the sections on screen.</p>
 			<figure class="wide"><img src="/assets/sbx_wmslite/manual/20-console-dashboard.png" alt="Console dashboard" />
 				<figcaption>Dashboard — live status and throughput.</figcaption></figure>
 
@@ -354,6 +403,7 @@
 				<li><b>SAP Confirmations</b> — outbound goods-issue (GI) per truck. Held partial loads can be <b>Released</b>; failures <b>Retried</b>.</li>
 				<li><b>SAP Loading</b> — the per-coil T1 loading push. <span class="tag-pill" style="background:#e7f6ee;color:#1f9d57;">Sent</span> = accepted by SAP, <span class="tag-pill" style="background:#f1f3f5;color:#6b7280;">Failed</span> = rejected (retry after fixing), <span class="tag-pill" style="background:#fdf2e0;color:#b9770e;">Disabled</span> = loaded while push was off (turn it on, then push).</li>
 				<li><b>SAP Log</b> — a timeline of every SAP call in and out, with result and message.</li>
+				<li><b>Scan Transactions → SAP column</b> — Inventory Count scans made on the handheld are also pushed to SAP as T1 (LOCATION = the counted bin) when <i>Push Count Scans to SAP</i> is on in Settings. Same pills as above; <b>Retry</b> on a Failed row. Rows that came from the SAP feed, uploads or RM Movement are never pushed and show “—”. A scan removed on the handheld <i>after</i> SAP accepted it stays in the list tagged <i>undone</i> with a reconcile note — SAP is not told, so correct it there.</li>
 			</ul>
 			<div class="gallery">
 				<figure class="wide" style="flex-basis:420px;"><img src="/assets/sbx_wmslite/manual/23-console-confirmations.png" alt="SAP confirmations" />
@@ -392,10 +442,12 @@
 				<tr><td>QC hold</td><td>A quality flag on a coil — informational; it does not block work.</td></tr>
 				<tr><td>Short-load</td><td>Completing a truck with some planned coils left off, with reasons and supervisor approval.</td></tr>
 				<tr><td>Goods issue (GI)</td><td>The SAP confirmation that a truck's goods have shipped.</td></tr>
-				<tr><td>T1</td><td>The per-coil loading transaction sent to SAP when a coil is loaded.</td></tr>
+				<tr><td>T1</td><td>The per-coil transaction sent to SAP: LOCATION = truck when a coil is loaded, LOCATION = bin when a coil is counted on the handheld.</td></tr>
 				<tr><td>Line</td><td>A production line — the destination of an RM movement.</td></tr>
 				<tr><td>In Transit to Line</td><td>Scanned out at the gate, not yet scanned in at the line. Its stored bin is still the one it left.</td></tr>
 				<tr><td>Flagged</td><td>A coil received at a line it was not sent to. The supervisor clears it.</td></tr>
+				<tr><td>Site</td><td>Ranihati, Jangalpur or Pipe Division — derived from a location's bin-code prefix (or a truck's SAP plant code) through the WMSLite Site master. See §6.0.</td></tr>
+				<tr><td>Material type</td><td>Sheet (Coil) or Pipes — derived from the coil's product name by the pipe keywords in WMSLite Settings. See §6.0.</td></tr>
 				<tr><td>Batch code</td><td>The short code inside the coil's QR (e.g. <code>JJG40788</code>). Everything tracks on this; the full label is kept beside it for reconciliation.</td></tr>
 			</table>
 			<p style="margin-top:40px;color:var(--sb-muted);font-size:13px;">WMS Core by StackBox · handheld app <code>/wms-loading</code> · console <code>/wms-console</code></p>

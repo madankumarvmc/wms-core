@@ -48,6 +48,9 @@ Consequences, all deliberate:
     Inventory view ("what just moved"), where an arriving coil belongs; a dispatch
     is not a location change and would only push real movement off the first page.
   * Undoing a receipt restores the previous `bin_code` from the ledger snapshot.
+  * A receipt is also pushed to SAP as a T2 transaction with LOCATION = the line
+    (`rm_push`, behind `rm_push_enabled`); a dispatch never is. Undo follows the
+    count push's rule: SAP is not told, the row carries a reconcile note.
 
 THE LEDGER IS THE DURABLE RECORD
 --------------------------------
@@ -75,7 +78,7 @@ import frappe
 from frappe import _
 from frappe.utils import add_to_date, cint, get_datetime, now_datetime
 
-from sbx_wmslite import tasks
+from sbx_wmslite import rm_push, tasks
 from sbx_wmslite.bin_api import RM_IN_TRANSIT
 from sbx_wmslite.decode import decode_coil_id
 from sbx_wmslite.locations import resolve_location
@@ -638,6 +641,11 @@ def rm_receive(destination, raw_qr, client_event_id=None, occurred_at=None,
 		frappe.db.commit()
 		return {"ok": True, "idempotent": True, "coil_id": coil,
 				**_coil_view(coil, _state(coil))}
+	# Queue the SAP T2 push for this receipt (Pending, or Disabled while the push
+	# is off). Inside this transaction so the sweep — enqueued after_commit — can
+	# never see an uncommitted row; it swallows its own errors. A flagged
+	# (unplanned) receipt is pushed like any other: the coil IS at this line.
+	rm_push.on_rm_received(txn.name)
 	frappe.db.commit()
 	out = {"ok": True, "coil_id": coil, **extra, **_coil_view(coil, _state(coil))}
 	if unplanned:
@@ -733,6 +741,11 @@ def rm_remove(coil_barcode, leg, client_event_id=None):
 	frappe.db.set_value("Coil Transaction", row.name,
 						{"reversed": 1, "reversed_by": frappe.session.user,
 						 "reversed_at": now}, update_modified=False)
+	# The SAP side of an undone receipt: not yet sent -> Not Required; already
+	# Sent -> status kept with a reconcile note, SAP is never told (same rule as
+	# the Inventory Count push). A dispatch was never pushed, so nothing to do.
+	if txn_type == TXN_RECEIPT:
+		rm_push.on_rm_removed(row.name)
 	_ledger(coil_barcode, REVERSAL_TYPES[txn_type],
 			f"rmx_{row.name}", row.rm_destination, cint(row.rm_cycle),
 			{"leg": leg, "reverses": row.name, "restored": target})

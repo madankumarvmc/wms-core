@@ -1,0 +1,124 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:site_name",
+ "creation": "2026-10-08 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "site_name",
+  "sort_order",
+  "disabled",
+  "column_break_1",
+  "plant_codes",
+  "section_prefixes",
+  "prefixes",
+  "notes"
+ ],
+ "fields": [
+  {
+   "description": "Shown in the console's Site filter.",
+   "fieldname": "site_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Site Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "0",
+   "description": "Order in the console's Site dropdown.",
+   "fieldname": "sort_order",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Sort Order"
+  },
+  {
+   "default": "0",
+   "description": "Hidden from the filter; its prefixes stop matching.",
+   "fieldname": "disabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Disabled"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Comma-separated SAP plant codes (Loading Plan.source_plant) that belong to this site, e.g. 1200. Loading Plans carry no bin code, so trucks are assigned to a site through this list.",
+   "fieldname": "plant_codes",
+   "fieldtype": "Data",
+   "label": "SAP Plant Codes"
+  },
+  {
+   "fieldname": "section_prefixes",
+   "fieldtype": "Section Break",
+   "label": "Bin Code Prefixes"
+  },
+  {
+   "description": "A bin, line or location whose code starts with one of these tokens (the leading letters/digits, e.g. JPR for JPR/KMILL/H2, CCL2 for CCL2 /G18/ 36) belongs to this site. Everything in Bin Inventory, Scan Transactions and the Bin Master is assigned this way. Saving re-classifies the scan ledger in the background.",
+   "fieldname": "prefixes",
+   "fieldtype": "Table",
+   "label": "Prefixes",
+   "options": "WMSLite Site Prefix",
+   "reqd": 0
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-10-08 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "SBX WMSLite",
+ "name": "WMSLite Site",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "share": 1,
+   "write": 1,
+   "role": "System Manager"
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "share": 1,
+   "write": 1,
+   "role": "Loading Supervisor"
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "share": 1,
+   "write": 1,
+   "role": "WMS Manager"
+  }
+ ],
+ "sort_field": "sort_order",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

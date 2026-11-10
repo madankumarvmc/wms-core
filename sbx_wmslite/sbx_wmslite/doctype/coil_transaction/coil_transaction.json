@@ -15,6 +15,8 @@
   "weight",
   "material_grade",
   "product",
+  "site",
+  "material_type",
   "sized",
   "plant",
   "qc",
@@ -34,7 +36,15 @@
   "reversed_at",
   "section_raw",
   "coil_qr_raw",
-  "raw_json"
+  "raw_json",
+  "section_sap",
+  "sap_status",
+  "sap_attempts",
+  "sap_pushed_at",
+  "column_break_sap",
+  "sap_message",
+  "sap_request",
+  "sap_response"
  ],
  "fields": [
   {
@@ -86,6 +96,25 @@
    "fieldname": "product",
    "fieldtype": "Data",
    "label": "Product"
+  },
+  {
+   "description": "Derived when the row is inserted: the bin code's prefix (or, for an RM row, the destination line's) looked up in the WMSLite Site master. Re-derived in the background when the master changes.",
+   "fieldname": "site",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Site",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "description": "Derived when the row is inserted from the product name (pipe keywords in WMSLite Settings), falling back to the coil's Bin Inventory product for handheld scans, which carry none.",
+   "fieldname": "material_type",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Material Type",
+   "options": "\nSheet (Coil)\nPipes\nUnassigned",
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "sized",
@@ -154,7 +183,7 @@
    "read_only": 1
   },
   {
-   "description": "RM Movement only: the destination line this scan concerns. Kept in its own column (not bin_code) because an RM row is NOT a statement about where the coil physically is \u2014 bin_code stays blank so nothing can derive a location from it.",
+   "description": "RM Movement only: the destination line this scan concerns. Kept in its own column (not bin_code) because an RM row is NOT a statement about where the coil physically is — bin_code stays blank so nothing can derive a location from it.",
    "fieldname": "rm_destination",
    "fieldtype": "Data",
    "in_standard_filter": 1,
@@ -218,11 +247,64 @@
    "fieldtype": "Data",
    "label": "Coil QR (raw)",
    "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_sap",
+   "fieldtype": "Section Break",
+   "label": "SAP Push"
+  },
+  {
+   "description": "Only In-app Inventory Count scans are pushed to SAP (blank = not applicable, or predates the feature). Pending = queued. Sending = claimed by a sweep. Sent = SAP accepted. Failed = SAP rejected (see message; Push Now / Retry). Disabled = scanned while count push was OFF. Not Required = undone in WMS before it was sent.",
+   "fieldname": "sap_status",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "SAP Status",
+   "options": "\nNot Required\nDisabled\nPending\nSending\nSent\nFailed",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "sap_attempts",
+   "fieldtype": "Int",
+   "label": "SAP Attempts",
+   "read_only": 1
+  },
+  {
+   "description": "Last attempt: set when a sweep claims the row and again when SAP answers. Drives stuck-'Sending' recovery.",
+   "fieldname": "sap_pushed_at",
+   "fieldtype": "Datetime",
+   "label": "SAP Last Attempt At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_sap",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "sap_message",
+   "fieldtype": "Small Text",
+   "label": "SAP Message",
+   "read_only": 1
+  },
+  {
+   "description": "The exact T1 row sent to SAP on the last attempt.",
+   "fieldname": "sap_request",
+   "fieldtype": "Code",
+   "label": "SAP Request",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sap_response",
+   "fieldtype": "Small Text",
+   "label": "SAP Response",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-06-27 00:00:00.000000",
+ "modified": "2026-10-08 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "SBX WMSLite",
  "name": "Coil Transaction",

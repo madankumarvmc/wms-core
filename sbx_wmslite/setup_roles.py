@@ -57,10 +57,11 @@ ROLE_PERMS = {
 	SUPERVISOR: {
 		"Loading Plan": _MANAGE,
 		"Coil Load Event": _MANAGE,
-		"Import Batch": _MANAGE,
+		"WMSLite Import Batch": _MANAGE,
 		"WMSLite SAP Confirmation": _MANAGE,
 		"Bin Inventory": _MANAGE,
 		"Coil Transaction": _MANAGE,
+		"WMSLite Site": _MANAGE,
 		"WMSLite Settings": {"read": 1, "write": 1},
 	},
 	INVENTORY: {
@@ -78,7 +79,7 @@ ROLE_PERMS = {
 		# user_api's own guards, which cap what a manager may grant.
 		"Loading Plan": _MANAGE,
 		"Coil Load Event": _MANAGE,
-		"Import Batch": _MANAGE,
+		"WMSLite Import Batch": _MANAGE,
 		"WMSLite SAP Confirmation": _MANAGE,
 		# These two grant Loading Supervisor via their own DocType JSON, so the
 		# manager has to be added here or it loses Desk access the supervisor has.
@@ -86,6 +87,7 @@ ROLE_PERMS = {
 		"WMSLite SAP Log": _MANAGE,
 		"Bin Inventory": _MANAGE,
 		"Coil Transaction": _MANAGE,
+		"WMSLite Site": _MANAGE,
 		"WMSLite Settings": {"read": 1, "write": 1},
 	},
 }

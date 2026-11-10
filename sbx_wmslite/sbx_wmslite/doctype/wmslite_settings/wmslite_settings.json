@@ -33,10 +33,19 @@
   "section_count",
   "count_enabled",
   "count_qc_default",
+  "count_push_enabled",
+  "count_txn_type",
+  "section_inventory_view",
+  "inventory_view_enabled",
+  "inventory_page_size",
   "section_rm",
   "rm_enabled",
   "rm_received_history_hours",
   "rm_unknown_bin",
+  "rm_push_enabled",
+  "rm_txn_type",
+  "section_console",
+  "material_pipe_keywords",
   "section_gi",
   "gi_enabled",
   "sap_token_url",
@@ -148,7 +157,7 @@
   },
   {
    "default": "0",
-   "description": "OFF (default): a fully-loaded plan waits at 'Ready to Complete' \u2014 no SAP goods-issue (PGI/GRN) and no T1 loading pushes fire until the operator presses Complete on the handheld (or a supervisor completes it from the console). ON: the plan auto-completes and pushes the moment every coil is loaded.",
+   "description": "OFF (default): a fully-loaded plan waits at 'Ready to Complete' — no SAP goods-issue (PGI/GRN) and no T1 loading pushes fire until the operator presses Complete on the handheld (or a supervisor completes it from the console). ON: the plan auto-completes and pushes the moment every coil is loaded.",
    "fieldname": "auto_complete_on_full_load",
    "fieldtype": "Check",
    "label": "Auto-complete When All Coils Loaded"
@@ -215,7 +224,7 @@
   },
   {
    "default": "0",
-   "description": "Enable the Inventory Count task on the HHT (bin\u2194coil mapping capture). Requires the Inventory Recorder role.",
+   "description": "Enable the Inventory Count task on the HHT (bin↔coil mapping capture). Requires the Inventory Recorder role.",
    "fieldname": "count_enabled",
    "fieldtype": "Check",
    "label": "Enable Inventory Count"
@@ -227,6 +236,39 @@
    "fieldtype": "Select",
    "label": "Default QC State",
    "options": "OK\nQC"
+  },
+  {
+   "default": "0",
+   "description": "Push a T1 transaction to SAP (zpwmsb) for each coil counted on the handheld, with LOCATION = the scanned bin — the same transaction the Jindal Apps Script sends. Only scans made on the handheld are pushed; rows that arrived from the SAP feed or uploads never are (RM line receipts have their own T2 switch in the RM Movement section). Uses the URL, Basic-auth user/password, SAP Username, timeout, TLS and batch size from 'SAP zpwmsb Push (outbound)' below. Scans made while this is OFF park at 'Disabled' and can be sent later with Push Now.",
+   "fieldname": "count_push_enabled",
+   "fieldtype": "Check",
+   "label": "Push Count Scans to SAP"
+  },
+  {
+   "default": "T1",
+   "description": "TRANSACTIONTYPE sent for count scans. SAP can assign a different code without a code change.",
+   "fieldname": "count_txn_type",
+   "fieldtype": "Data",
+   "label": "Count Transaction Type"
+  },
+  {
+   "fieldname": "section_inventory_view",
+   "fieldtype": "Section Break",
+   "label": "Inventory Lookup (handheld)"
+  },
+  {
+   "default": "1",
+   "description": "Show the read-only Inventory card on the handheld: list coils with their bin, 20 at a time, filtered by a scanned/typed bin code or coil barcode. Every handheld role sees it.",
+   "fieldname": "inventory_view_enabled",
+   "fieldtype": "Check",
+   "label": "Enable Inventory Lookup"
+  },
+  {
+   "default": "20",
+   "description": "Rows per page on the handheld Inventory card ('Show more' fetches the next page). Max 100.",
+   "fieldname": "inventory_page_size",
+   "fieldtype": "Int",
+   "label": "Inventory Page Size"
   },
   {
    "fieldname": "section_rm",
@@ -253,6 +295,32 @@
    "fieldname": "rm_unknown_bin",
    "fieldtype": "Data",
    "label": "Placeholder Bin for Unknown Coils"
+  },
+  {
+   "default": "0",
+   "description": "Push a T2 transaction to SAP (zpwmsb) for each coil RECEIVED at a production line on the handheld, with LOCATION = the destination line — the same row shape as the loading / count T1 push. Gate dispatches are never pushed (the coil is in transit, not at a location). Uses the URL, Basic-auth user/password, SAP Username, timeout, TLS and batch size from 'SAP zpwmsb Push (outbound)' below. Receipts made while this is OFF park at 'Disabled' and can be sent later with Push Now. Undoing a receipt never tells SAP: an already-sent row keeps its status with a reconcile note.",
+   "fieldname": "rm_push_enabled",
+   "fieldtype": "Check",
+   "label": "Push Line Receipts to SAP (T2)"
+  },
+  {
+   "default": "T2",
+   "description": "TRANSACTIONTYPE sent for line receipts. SAP can assign a different code without a code change.",
+   "fieldname": "rm_txn_type",
+   "fieldtype": "Data",
+   "label": "RM Receipt Transaction Type"
+  },
+  {
+   "fieldname": "section_console",
+   "fieldtype": "Section Break",
+   "label": "Console Filters"
+  },
+  {
+   "default": "PIPE,TUBE",
+   "description": "Comma-separated, case-insensitive. A product containing any of these words is 'Pipes' in the console's Material Type filter; any other product is 'Sheet (Coil)'; a blank product is 'Unassigned'. Site is configured in the WMSLite Site master (bin-code prefixes + SAP plant codes). Changing this re-classifies the scan ledger in the background.",
+   "fieldname": "material_pipe_keywords",
+   "fieldtype": "Data",
+   "label": "Pipe Keywords (Material Type)"
   },
   {
    "fieldname": "section_gi",
@@ -334,17 +402,17 @@
   {
    "fieldname": "section_loading",
    "fieldtype": "Section Break",
-   "label": "SAP Loading Transactions (outbound)"
+   "label": "SAP zpwmsb Push (outbound) — shared by Loading, Inventory Count and RM Receipt"
   },
   {
    "default": "0",
-   "description": "Push a transaction to SAP (zpwmsb) for each coil loaded onto a truck.",
+   "description": "Push a transaction to SAP (zpwmsb) for each coil loaded onto a truck. (Count scans have their own switch under Inventory Count.)",
    "fieldname": "loading_push_enabled",
    "fieldtype": "Check",
    "label": "Push Loading Transactions to SAP"
   },
   {
-   "description": "SAP zpwmsb REST endpoint (e.g. https://<your-sap-host>/sap/bc/zpwmsb/rest).",
+   "description": "SAP zpwmsb REST endpoint (e.g. https://<your-sap-host>/sap/bc/zpwmsb/rest). Shared by the loading push and the inventory-count push, as are the credentials, SAP Username, timeout, TLS and batch size below.",
    "fieldname": "loading_push_url",
    "fieldtype": "Data",
    "label": "SAP Loading URL"
@@ -406,7 +474,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-06-22 00:00:00.000000",
+ "modified": "2026-10-08 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "SBX WMSLite",
  "name": "WMSLite Settings",

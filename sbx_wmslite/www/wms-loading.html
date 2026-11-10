@@ -313,10 +313,31 @@
 					<span class="tt-title">Line Receipt</span>
 					<span class="tt-sub">Receive coils at your line — scan each one</span>
 				</button>
+				<button class="task-tile" id="task-inventory">
+					<span class="tt-emoji">📦</span>
+					<span class="tt-title">Inventory</span>
+					<span class="tt-sub">Find coils by bin or barcode — read only</span>
+				</button>
 			</div>
 			<div id="task-empty" class="empty hide" style="text-align:center;padding:34px 12px;">
 				No tasks assigned — contact your supervisor.
 			</div>
+		</section>
+
+		<!-- SCREEN 11: Inventory lookup — read-only coil + location, bin OR coil in one box -->
+		<section id="screen-inventory" class="hide">
+			<div class="sb-card" style="padding:14px;">
+				<div class="sb-label">Inventory</div>
+				<form id="inv-form" class="scan-row" autocomplete="off" action="javascript:void(0)">
+					<input class="scan-input" id="inv-input" placeholder="Scan or type bin or coil" autocomplete="off"
+						autocapitalize="characters" enterkeyhint="search" inputmode="text" />
+					<button type="submit" class="scan-go" id="inv-go" aria-label="Search">&rarr;</button>
+				</form>
+				<div class="hint">Scan a bin to list its coils, or a coil to see where it is. Part of a code works too.</div>
+			</div>
+			<div id="inv-context" class="bin-context"></div>
+			<div id="inv-list" style="margin-top:14px;"></div>
+			<button class="sb-btn sb-btn--ghost hide" id="inv-more" style="margin-top:6px;">Show more</button>
 		</section>
 
 		<!-- SCREEN 5: inventory count — scan a bin -->
@@ -986,17 +1007,21 @@
 
 		// Extract the coil/batch code from a scanned inventory-barcode QR.
 		// Ported verbatim from the Jindal AppSheet formula: split on "-", trim each
-		// segment, then apply the OEM / extra-code / Jangalpur / default rules.
+		// segment (collapsing runs of spaces like AppSheet's TRIM), then apply the
+		// OEM / extra-code / Jangalpur / default rules. Must match decode.py —
+		// tests/test_decode_parity.py enforces it.
 		function decodeInventoryBarcode(raw) {
 			const s = (raw || "").trim();
 			if (!s) return "";
-			const parts = s.split("-").map((p) => p.trim());
+			const parts = s.split("-").map((p) => p.trim().replace(/\s+/g, " "));
 			const n = parts.length;
 			const at = (i) => (i >= 1 && i <= n) ? parts[i - 1] : "";
 			const p1 = at(1), p2 = at(2), p3 = at(3), p4 = at(4);
 			const U = (x) => (x || "").toUpperCase();
-			// 1) >=5 segments and segment-2 ends with "OEM" -> p3-p4
-			if (n >= 5 && U(p2).slice(-3) === "OEM") return p3 + "-" + p4;
+			// 1) >=5 segments, segment-2 ends with "OEM" and segment-4 is a short
+			//    suffix (e.g. corrugated sheet "464-C") -> p3-p4. For OEM coils
+			//    segment-4 is the size text, so this must NOT fire there.
+			if (n >= 5 && U(p2).slice(-3) === "OEM" && p4.length <= 3) return p3 + "-" + p4;
 			if (n >= 3) {
 				const P = U(p3);
 				// 2) segment-3 is an extra/product code -> the batch is in segment-4
@@ -1391,6 +1416,7 @@
 			count: () => goCountBin(),
 			rm_dispatch: () => goRmDest(),
 			rm_receive: () => goRmLine(),
+			inventory: () => goInventory(),
 		};
 		function startTask(task) {
 			const enter = TASK_ENTRY[task];
@@ -1399,8 +1425,78 @@
 			enter();
 		}
 
+		// ---------- INVENTORY LOOKUP (read-only) ----------
+		// One box, bin OR coil: the server decides which (inventory_api.resolve_query —
+		// bin first, because 85 real bin labels contain dashes and the coil rule would
+		// mangle them). Pages are keyset: `next` is the last row shown, sent back on
+		// "Show more", so a deep scroll never re-sorts the table. Online only — it
+		// writes nothing, so there is nothing to queue.
+		let INV = { q: "", rows: [], next: null, total: 0, mode: "all", value: "", has_more: false };
+		function goInventory() {
+			INV = { q: "", rows: [], next: null, total: 0, mode: "all", value: "", has_more: false };
+			$("inv-input").value = "";
+			showScreen("inventory");
+			loadInventory(false);
+			setTimeout(() => $("inv-input").focus(), 120);
+		}
+		function handleInvScan(raw) {
+			raw = (raw || "").trim();
+			$("inv-input").value = "";
+			INV.q = raw; INV.rows = []; INV.next = null;
+			loadInventory(false);
+		}
+		async function loadInventory(more) {
+			if (!navigator.onLine) { banner("Inventory needs a connection", "fail"); renderInventory(); return; }
+			const btn = $("inv-more"); btn.disabled = true;
+			if (!more) $("inv-list").innerHTML = '<div class="empty">Loading…</div>';
+			try {
+				const args = { q: INV.q };
+				if (more && INV.next) Object.assign(args, INV.next);
+				const r = await api("sbx_wmslite.inventory_api.inventory_lookup", args);
+				INV.rows = more ? INV.rows.concat(r.rows || []) : (r.rows || []);
+				INV.next = r.next || null; INV.total = r.total || 0;
+				INV.mode = r.mode; INV.value = r.value || ""; INV.has_more = !!r.has_more;
+			} catch (e) {
+				banner(e.network ? "Inventory needs a connection" : e.message, "fail");
+				if (!more) { INV.rows = []; INV.total = 0; INV.has_more = false; INV.next = null; }
+			} finally { btn.disabled = false; }
+			renderInventory();
+		}
+		function invRowHtml(x) {
+			const code = esc(x.coil_barcode);
+			const meta = [x.bin_code ? "📍 " + x.bin_code : "", x.material_grade,
+				x.weight ? x.weight + " kg" : "", x.product].filter(Boolean).map(esc).join(" · ");
+			let pills = "";
+			if (x.rm_status === "In Transit to Line") pills += '<span class="rm-pill warn">In transit → ' + esc(x.rm_destination || "?") + '</span>';
+			else if (x.rm_status === "Received") pills += '<span class="rm-pill">At line ' + esc(x.rm_destination || "") + '</span>';
+			if (x.status && x.status !== "Available") pills += '<span class="rm-pill">' + esc(x.status) + '</span>';
+			if (x.qc) pills += '<span class="rm-pill warn">QC hold</span>';
+			return '<div class="ccoil' + (x.qc ? ' qc' : '') + '" data-coil="' + code + '">' +
+				'<div style="flex:1;min-width:0;"><div class="code">' + code + pills + '</div>' +
+				(meta ? '<div class="meta">' + meta + '</div>' : '') + '</div></div>';
+		}
+		function renderInventory() {
+			const n = INV.total, shown = INV.rows.length;
+			const coils = (k) => k + " coil" + (k === 1 ? "" : "s");
+			let head, sub;
+			if (INV.mode === "bin") { head = esc(INV.value); sub = "Bin · " + coils(n); }
+			else if (INV.mode === "coil") { head = esc(INV.value); sub = "Coil" + (INV.rows[0] ? " · in " + esc(INV.rows[0].bin_code) : ""); }
+			else if (INV.mode === "prefix") { head = "Starts with “" + esc(INV.value) + "”"; sub = coils(n); }
+			else { head = "All inventory"; sub = coils(n) + " · by location"; }
+			$("inv-context").innerHTML =
+				'<div style="flex:1;min-width:0;"><div class="bx-code">' + head + '</div><div class="bx-loc">' + sub + '</div></div>' +
+				(INV.q ? '<button class="bx-change" id="inv-clear">Clear</button>' : '');
+			const clr = $("inv-clear");
+			if (clr) clr.onclick = () => { INV.q = ""; INV.rows = []; INV.next = null; loadInventory(false); };
+			$("inv-list").innerHTML = INV.rows.length ? INV.rows.map(invRowHtml).join("")
+				: '<div class="empty">' + (INV.q ? "Nothing matches “" + esc(INV.q) + "”." : "No inventory yet.") + '</div>';
+			const btn = $("inv-more");
+			btn.classList.toggle("hide", !INV.has_more);
+			btn.textContent = "Show more (" + shown + " of " + n + ")";
+		}
+
 		// ---------- INVENTORY COUNT ----------
-		let COUNT = null;   // { bin_code, coils: [{coil_barcode, qc, material_grade, weight, moved_from, existing, cid, raw}] }
+		let COUNT = null;   // { bin_code, coils: [{coil_barcode, qc, material_grade, weight, moved_from, cid, raw}] }
 		const COUNT_RENDER_CAP = 80;
 
 		function goCountBin() {
@@ -1417,8 +1513,10 @@
 			if (navigator.onLine) {
 				try {
 					const r = await api("sbx_wmslite.count_api.count_open_bin", { raw_bin: raw });
+					// Blind count: the server returns only this operator's own scans in this
+					// bin today (resume after a reload) — never the coils SAP maps here.
 					COUNT = { bin_code: r.bin_code, coils: (r.coils || []).map((c) => ({
-						coil_barcode: c.coil_barcode, qc: c.qc, material_grade: c.material_grade, weight: c.weight, existing: 1 })) };
+						coil_barcode: c.coil_barcode, qc: c.qc, material_grade: c.material_grade, weight: c.weight, cid: c.cid })) };
 				} catch (e) { banner(e.message, "fail"); return; }
 			} else {
 				COUNT = { bin_code: bin, coils: [] };
@@ -1441,7 +1539,7 @@
 		function countRowHtml(x) {
 			const code = esc(x.coil_barcode);
 			const meta = [x.material_grade, x.weight ? x.weight + ' kg' : '',
-				x.moved_from ? 'moved from ' + x.moved_from : (x.existing ? 'already here' : '')].filter(Boolean).map(esc).join(' · ');
+				x.moved_from ? 'moved from ' + x.moved_from : ''].filter(Boolean).map(esc).join(' · ');
 			return '<div class="ccoil' + (x.qc ? ' qc' : '') + (x.moved_from ? ' moved' : '') + '" data-coil="' + code + '">' +
 				'<div style="flex:1;min-width:0;"><div class="code">' + code + '</div>' + (meta ? '<div class="meta">' + meta + '</div>' : '') + '</div>' +
 				'<button class="qc-toggle' + (x.qc ? ' on' : '') + '" data-coil="' + code + '">' + (x.qc ? 'QC' : 'OK') + '</button>' +
@@ -1477,7 +1575,6 @@
 					const r = await api("sbx_wmslite.count_api.count_scan", { bin_code: COUNT.bin_code, raw_qr: raw, client_event_id: cid, qc: qc });
 					if (r.coil_id) rowObj.coil_barcode = r.coil_id;
 					if (r.moved) rowObj.moved_from = r.previous_bin;
-					if (r.existing) rowObj.existing = 1;
 					renderCount();
 				} catch (e) {
 					await enqueue({ type: "count_scan", bin_code: COUNT.bin_code, raw_qr: raw, coil_barcode: coilId, qc: qc, client_event_id: cid });
@@ -1904,7 +2001,7 @@
 		// Table-driven so adding a screen is one row, not another pair of hand-written
 		// toggle lines that the next module has to remember to add.
 		const SCREENS = ["home", "coils", "summary", "tasks", "count-bin", "count",
-			"rm-dest", "rm-dispatch", "rm-line", "rm-receive"];
+			"rm-dest", "rm-dispatch", "rm-line", "rm-receive", "inventory"];
 		const BOTTOMBARS = { coils: "bottombar", count: "count-bottombar",
 			"rm-dispatch": "rmd-bottombar", "rm-receive": "rmr-bottombar" };
 		function showScreen(which) {
@@ -1976,6 +2073,13 @@
 		$("rmd-save").onclick = rmDispatchFinish;
 		$("rmr-save").onclick = rmReceiveFinish;
 		$("rmr-refresh").onclick = () => { if (RM) openRmLine(RM.destination, true); };
+
+		// Inventory lookup wiring — same three triggers, plus "Show more".
+		$("task-inventory").onclick = () => startTask("inventory");
+		$("inv-form").addEventListener("submit", (e) => { e.preventDefault(); handleInvScan($("inv-input").value); });
+		$("inv-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); handleInvScan($("inv-input").value); } });
+		autoScanWatch($("inv-input"), handleInvScan);
+		$("inv-more").onclick = () => loadInventory(true);
 
 		$("qbadge").onclick = openQueueSheet;   // tap the "N queued" badge → offline-queue detail popup
 		$("uchip").onclick = openUserSheet;     // tap the initials chip → account + sign out

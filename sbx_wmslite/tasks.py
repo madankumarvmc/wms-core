@@ -1,7 +1,7 @@
 """HHT task registry — which tasks a user may perform, and the shared guard.
 
 The handheld hosts several tasks in one PWA (Loading, Inventory Count, RM Gate
-Dispatch, RM Line Receipt). Each is gated by a role set and, except Loading, by a
+Dispatch, RM Line Receipt, Inventory lookup). Each is gated by a role set and, except Loading, by a
 feature flag in WMSLite Settings. Keeping that in one table means adding the next
 task costs a dict entry rather than another branch in an if/elif chain — the
 `my_tasks` endpoint, the role guards and the PWA's task picker all read from here.
@@ -41,13 +41,16 @@ LOADING_ROLES = {"Loading Operator"} | SUPERUSERS
 COUNT_ROLES = {"Inventory Recorder"} | SUPERUSERS
 RM_GATE_ROLES = {"RM Gate Operator"} | SUPERUSERS
 RM_LINE_ROLES = {"RM Line Operator"} | SUPERUSERS
+# Inventory lookup is read-only, so every handheld role gets it (owner, 2026-10-08).
+INVENTORY_ROLES = LOADING_ROLES | COUNT_ROLES | RM_GATE_ROLES | RM_LINE_ROLES
 
-# key -> (roles that may perform it, WMSLite Settings flag or None)
+# key -> (roles that may perform it, WMSLite Settings flag or None). Order = tile order.
 TASKS = (
 	{"key": "loading", "roles": LOADING_ROLES, "flag": None},
 	{"key": "count", "roles": COUNT_ROLES, "flag": "count_enabled"},
 	{"key": "rm_dispatch", "roles": RM_GATE_ROLES, "flag": "rm_enabled"},
 	{"key": "rm_receive", "roles": RM_LINE_ROLES, "flag": "rm_enabled"},
+	{"key": "inventory", "roles": INVENTORY_ROLES, "flag": "inventory_view_enabled"},
 )
 
 
